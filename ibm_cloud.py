@@ -37,5 +37,6 @@ def upload_to_ibm_cos(file_name,data):
 
     if response.status_code in (200, 201):
         print("Upload successful.")
+        return url
     else:
         print(f"Upload failed: {response.status_code}\n{response.text}")
