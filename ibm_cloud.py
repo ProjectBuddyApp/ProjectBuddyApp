@@ -1,4 +1,8 @@
 import requests
+from io import BytesIO
+from flask import Flask, send_file
+
+
 
 API_KEY="C3ePfiQHqD_PbHuo6rHivG1fDa_AgOcqMdmzHOawUyi1"
 BUCKET_NAME="hacker-01"
@@ -40,3 +44,25 @@ def upload_to_ibm_cos(file_name,data):
         return url
     else:
         print(f"Upload failed: {response.status_code}\n{response.text}")
+
+
+def fetch_file_from_cos(file_url):
+    access_token = get_ibm_iam_access_token()
+    headers = {
+    'Authorization': f"Bearer {access_token}",
+    'Content-Type': 'application/octet-stream'
+    }
+
+    response = requests.get(file_url, headers=headers)
+    response.raise_for_status()
+
+    excel_file = BytesIO(response.content)
+    excel_file.seek(0)
+
+    return send_file(
+        excel_file,
+        as_attachment=True,
+        download_name='output.xlsx', 
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    

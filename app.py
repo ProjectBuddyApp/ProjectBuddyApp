@@ -4,6 +4,8 @@ import io
 from constant import buddy_steps
 import mongoclient
 import ibm_cloud
+import utils
+
 
 
 @cl.on_message
@@ -17,10 +19,21 @@ async def main(message:str):
         return
 
     if cl.user_session.get("awaiting_buddy_email"):
-        cl.user_session.set("awaiting_buddy_email",False)
         buddy_email = message.content
+        if not utils.is_valid_email(buddy_email):
+             await cl.Message(content="Please provide valid email address").send()
+             return
+        cl.user_session.set("awaiting_buddy_email",False)
         cl.user_session.set("buddy_email", buddy_email)
         await cl.Message(content=buddy_steps[1]).send()
+        cl.user_session.set("awaiting_github-username", True)
+        return
+    
+    if cl.user_session.get("awaiting_github-username"):
+        cl.user_session.set("awaiting_github-username",False)
+        buddy_github_username = message.content
+        cl.user_session.set("buddy_github_username", buddy_github_username)
+        await cl.Message(content=buddy_steps[2]).send()
         cl.user_session.set("awaiting_team_name", True)
         return
 
@@ -28,9 +41,9 @@ async def main(message:str):
         cl.user_session.set("awaiting_team_name",False)
         team_name = message.content
         cl.user_session.set("team_name", team_name)
-        await cl.Message(content=buddy_steps[2]).send()
+        await cl.Message(content=buddy_steps[3]).send()
         elements = [
-            cl.File(name="template",path="./dummy.docx",display="inline",
+            cl.File(name="template",path="./onboarding_template.xlsx",display="inline",
         )]
         await cl.Message(content="Here you go", elements=elements).send()
         cl.user_session.set("awaiting_team_template", True)
@@ -50,12 +63,14 @@ async def save_to_mongo_db(session):
     buddy_email = session.get("buddy_email")
     team_name = session.get("team_name")
     template_id = session.get("template_id")
-    mongoclient.insert_team_data(team_name,buddy_name,buddy_email,template_id)
+    buddy_github_username = session.get("buddy_github_username")
+    mongoclient.insert_team_data(team_name,buddy_name,buddy_email,template_id,buddy_github_username)
     # Clear session data if you don't need it anymore
     session.set("buddy_name", None)
     session.set("buddy_email", None)
     session.set("team_name", None)
     session.set("template_id", None)
+    session.set("buddy_github_username",None)
 
 @cl.on_chat_start
 async def start():
@@ -92,25 +107,28 @@ async def handle_action(action: cl.Action):
 async def handle_file_upload(message: cl.Message,session):
     if message.elements:
         for file in message.elements:
-            if not file.name.lower().endswith(".docx"):
-             await cl.Message(content="❌ Please upload a docx document.").send()
+            if not file.name.lower().endswith(".xlsx"):
+             await cl.Message(content="❌ Please upload a excel document.").send()
              return
             # ✅ file.path gives you the local path to the uploaded file
             await cl.Message(content=f"Thanks for uploading we will review it").send()
             # You can now open/read/process it like any local file
             with open(file.path, "rb") as f:
               fileContent = f.read()
-              doc = Document(io.BytesIO(fileContent))
-              file_validated = await file_validator(file,doc)
+            #   doc = Document(io.BytesIO(fileContent))
+            #   file_validated = await file_validator(file,doc)
+              file_validated = True
               if file_validated:
                 team_name = session.get("team_name")
                 if team_name:
-                    ibm_cloud.upload_to_ibm_cos(team_name,fileContent)
+                    template_id = ibm_cloud.upload_to_ibm_cos(team_name,fileContent)
+                    return template_id
                   
     else:
         await cl.Message(
             content="Please upload your filled Word template here."
         ).send()
+
 
 async def file_validator(file,doc):
     try:
