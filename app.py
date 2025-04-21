@@ -5,7 +5,7 @@ from constant import buddy_steps
 import mongoclient
 import ibm_cloud
 import utils
-
+from task_handler import create_github_onboarding_tasks
 
 
 @cl.on_message
@@ -55,7 +55,7 @@ async def main(message:str):
             template_id = await handle_file_upload(message,cl.user_session)
             if template_id:
                 cl.user_session.set("template_id", template_id)
-                await save_to_mongo_db(cl.user_session)
+                # await save_to_mongo_db(cl.user_session)
                 
 
 async def save_to_mongo_db(session):
@@ -102,6 +102,9 @@ async def handle_action(action: cl.Action):
         cl.user_session.set("awaiting_buddy_name", True)
     elif role == "Joinee":
         await cl.Message(content="Welcome aboard! Let's get you started. 🚀").send()
+
+        await create_github_onboarding_tasks()  # You can replace with real data later
+        await cl.Message(content="✅ We've set up your onboarding tasks in GitHub! Check your assigned issues.").send()
 
 
 async def handle_file_upload(message: cl.Message,session):
