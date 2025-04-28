@@ -15,7 +15,7 @@ import pandas as pd
 
 # Load environment variables
 load_dotenv()
-os.environ['GROQ_API_KEY'] = os.getenv("GROQ_API_KEY")
+
 groq_api_key = os.getenv("GROQ_API_KEY")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -47,16 +47,15 @@ prompt = ChatPromptTemplate.from_template(
 
 
 # Function to create vector embeddings from pdf
-def create_or_load_vector_embedding():
+def create_or_load_vector_embedding(persist_directory="vector_store"):
 
-    persist_directory = "vector_store"
 
     if os.path.exists(persist_directory):
         print("Loading existing vector database...")
         vectors = FAISS.load_local(persist_directory, embedding_model, allow_dangerous_deserialization=True)
     else:
         print("Creating new vector database from documents...")
-        loader = PyPDFDirectoryLoader("research_papers")  # Folder must exist
+        loader = PyPDFDirectoryLoader(persist_directory)  # Folder must exist
         docs = loader.load()
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         final_documents = text_splitter.split_documents(docs[:50])
@@ -77,16 +76,15 @@ def load_excel_documents(file_path):
     return documents
 
 # Function to create vector embeddings from excel
-def create_or_load_vector_embedding_for_excel(filepath):
+def create_or_load_vector_embedding_for_excel(filepath_excel, persist_directory="vector_store_excel"):
     
-    persist_directory = "vector_store_excel"
 
     if os.path.exists(persist_directory):
         print("Loading existing vector database...")
         vectors = FAISS.load_local(persist_directory, embedding_model, allow_dangerous_deserialization=True)
     else:
         print("Creating new vector database from Excel file...")
-        documents = load_excel_documents(filepath)  # <-- Your Excel file path
+        documents = load_excel_documents(filepath_excel)  # <-- Your Excel file path
 
         # Optional: split long documents
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -100,8 +98,8 @@ def create_or_load_vector_embedding_for_excel(filepath):
 
 if __name__ == "__main__":
     print("Building vector database from documents...")
-    filepath = './onboarding_template.xlsx'
-    vectors = create_or_load_vector_embedding_for_excel(filepath)
+    onboarding_filepath = './onboarding_template.xlsx'
+    vectors = create_or_load_vector_embedding_for_excel(onboarding_filepath)
     print("Vector Database is ready.\n")
 
     user_prompt = input("Enter your query: ")
