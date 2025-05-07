@@ -1,7 +1,5 @@
 import requests
 from io import BytesIO
-from flask import Flask, send_file
-
 
 
 API_KEY="C3ePfiQHqD_PbHuo6rHivG1fDa_AgOcqMdmzHOawUyi1"
@@ -58,11 +56,5 @@ def fetch_file_from_cos(file_url):
 
     excel_file = BytesIO(response.content)
     excel_file.seek(0)
-
-    return send_file(
-        excel_file,
-        as_attachment=True,
-        download_name='output.xlsx', 
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
+    return excel_file
     

@@ -5,7 +5,7 @@ from constant import buddy_steps
 import mongoclient
 import ibm_cloud
 import utils
-from task_handler import create_github_onboarding_tasks
+import task_handler
 
 
 @cl.on_message
@@ -55,7 +55,7 @@ async def main(message:str):
             template_id = await handle_file_upload(message,cl.user_session)
             if template_id:
                 cl.user_session.set("template_id", template_id)
-                # await save_to_mongo_db(cl.user_session)
+                await save_to_mongo_db(cl.user_session)
                 
 
 async def save_to_mongo_db(session):
@@ -101,10 +101,26 @@ async def handle_action(action: cl.Action):
         await cl.Message(content="Awesome! What’s your name, Buddy?").send()
         cl.user_session.set("awaiting_buddy_name", True)
     elif role == "Joinee":
-        await cl.Message(content="Welcome aboard! Let's get you started. 🚀").send()
+        team_names = mongoclient.get_all_teams()
+        print(team_names)
+        options = [cl.Action(name="team_select",label=str(name), value=str(name),payload={}) for name in team_names if name]
+        await cl.Message(content="Welcome aboard! Let's get you started. 🚀 \nSelect your team:",actions=options).send()
 
-        await create_github_onboarding_tasks()  # You can replace with real data later
+@cl.action_callback("team_select")
+async def on_action(action: cl.Action):
+    if action.name == "team_select":
+        selected_team = action.label
+        buddy_name,buddy_email,buddy_github_username = mongoclient.get_buddy_information(selected_team)
+        await cl.Message(
+            f"🎉 Welcome to the **{selected_team}** team!\n\n"
+            f"Your onboarding buddy is **{buddy_name}**, "
+            f"and their W3 ID is `{buddy_email}`.\n\n"
+            f"They'll help you get settled in — don't hesitate to reach out!"
+            ).send()
+        await task_handler.create_github_onboarding_tasks(selected_team)  
         await cl.Message(content="✅ We've set up your onboarding tasks in GitHub! Check your assigned issues.").send()
+        
+
 
 
 async def handle_file_upload(message: cl.Message,session):
