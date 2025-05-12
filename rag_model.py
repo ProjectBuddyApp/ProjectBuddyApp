@@ -121,14 +121,3 @@ class MyBuddy:
         retrieval_chain = create_retrieval_chain(retriever, document_chain)
         response = retrieval_chain.invoke({'input': question})
         return response['answer']
-
-def main():
-    filepath = './onboarding_template.xlsx'
-    vector_db_path = './vector_store_excel'
-    myobj = MyBuddy(filepath, vector_db_path)
-    question = "What are the sections I've to learn about?"
-    response = myobj.AskQuestion(question)
-    print(response)
-
-if __name__ == "__main__":
-    main()
