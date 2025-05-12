@@ -43,10 +43,10 @@ class MyBuddy:
         """
         Initializes the MyBuddy onboarding assistant.
 
-        :param filepath: Path to the Excel onboarding file.
-        :param vector_db_path: Path to store or load the vector database.
-        :param chunk_size: Size of text chunks for embedding.
-        :param chunk_overlap: Overlap between text chunks.
+        param filepath: Path to the Excel onboarding file.
+        param vector_db_path: Path to store or load the vector database.
+        param chunk_size: Size of text chunks for embedding.
+        param chunk_overlap: Overlap between text chunks.
         """
         self.onboarding_excel_path = filepath
         self.vector_db_path = vector_db_path
