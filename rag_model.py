@@ -1,7 +1,6 @@
 import os
 import time
 from dotenv import load_dotenv
-
 from langchain_groq import ChatGroq
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -12,106 +11,113 @@ from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 import pandas as pd
+import logging
+from typing import List
+
+# Logging Configuration
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Load environment variables
 load_dotenv()
-
-groq_api_key = os.getenv("GROQ_API_KEY")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# Initialize embeddings and LLM
-embedding_model = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={"device": "cpu"},  # or "cuda" if you have a GPU
-        encode_kwargs={"normalize_embeddings": True},
-    )
-llm = ChatGroq(groq_api_key=groq_api_key, model_name="Llama3-8b-8192")
+# Prompt Template as Constant
+PROMPT_TEMPLATE = """
+You are an onboarding assistant helping new employees onboard.
 
-# Define prompt
-prompt = ChatPromptTemplate.from_template(
-    """
-    You are an onboarding assistant helping new employees.
+Answer the user's question in a clear, direct, and professional manner using only the information provided in the following context.
+If the context does not contain the exact answer, use your best judgment to provide a helpful and relevant response.
 
-    Answer the user's question in a clear, direct, and professional manner using only the information provided in the following context.
-    If the context does not contain the exact answer, use your best judgment to provide a helpful and relevant response.
+Always be confident and supportive. Do not mention that the information came from the context. 
+Do not say "based on the context" or "the document says".
 
-    Always be confident and supportive. Do not mention that the information came from the context. 
-    Do not say "based on the context" or "the document says".
-    
-    <context>
-    {context}
-    <context>
-    Question:{input}
-    """
-)
+<context>
+{context}
+<context>
+Question:{input}
+"""
 
+class MyBuddy:
+    def __init__(self, filepath: str, vector_db_path: str, chunk_size: int = 1000, chunk_overlap: int = 200):
+        """
+        Initializes the MyBuddy onboarding assistant.
 
-# Function to create vector embeddings from pdf
-def create_or_load_vector_embedding(persist_directory="vector_store"):
+        param filepath: Path to the Excel onboarding file.
+        param vector_db_path: Path to store or load the vector database.
+        param chunk_size: Size of text chunks for embedding.
+        param chunk_overlap: Overlap between text chunks.
+        """
+        self.onboarding_excel_path = filepath
+        self.vector_db_path = vector_db_path
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
 
+        self.groq_api_key = os.getenv("GROQ_API_KEY")
+        if not self.groq_api_key:
+            raise ValueError("GROQ_API_KEY is not set in environment variables.")
 
-    if os.path.exists(persist_directory):
-        print("Loading existing vector database...")
-        vectors = FAISS.load_local(persist_directory, embedding_model, allow_dangerous_deserialization=True)
-    else:
-        print("Creating new vector database from documents...")
-        loader = PyPDFDirectoryLoader(persist_directory)  # Folder must exist
-        docs = loader.load()
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        final_documents = text_splitter.split_documents(docs[:50])
-        vectors = FAISS.from_documents(final_documents, embedding_model)
-        vectors.save_local(persist_directory)
-        print("Vector database created and saved locally.")
-    
-    return vectors
+        self.embedding_model = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
 
-def load_excel_documents(file_path):
-    df = pd.read_excel(file_path)
+        self.llm = ChatGroq(groq_api_key=self.groq_api_key, model_name="Llama3-8b-8192")
+        self.prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
 
-    # Create one Document per row, combining all columns into one text blob
-    documents = []
-    for idx, row in df.iterrows():
-        content = "\n".join([f"{col}: {row[col]}" for col in df.columns])
-        documents.append(Document(page_content=content))
-    return documents
+        self.vectors = None
 
-# Function to create vector embeddings from excel
-def create_or_load_vector_embedding_for_excel(filepath_excel, persist_directory="vector_store_excel"):
-    
+    def load_excel_documents(self) -> List[Document]:
+        if not os.path.isfile(self.onboarding_excel_path):
+            raise FileNotFoundError(f"Excel file not found: {self.onboarding_excel_path}")
 
-    if os.path.exists(persist_directory):
-        print("Loading existing vector database...")
-        vectors = FAISS.load_local(persist_directory, embedding_model, allow_dangerous_deserialization=True)
-    else:
-        print("Creating new vector database from Excel file...")
-        documents = load_excel_documents(filepath_excel)  # <-- Your Excel file path
+        df = pd.read_excel(self.onboarding_excel_path)
+        documents = [
+            Document(page_content="\n".join([f"{col}: {row[col]}" for col in df.columns]))
+            for _, row in df.iterrows()
+        ]
+        return documents
 
-        # Optional: split long documents
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        final_documents = text_splitter.split_documents(documents)
+    def create_or_load_vector_embedding_for_excel(self):
+        """
+        Creates or loads vector embeddings from the Excel document.
+        """
+        if os.path.exists(self.vector_db_path):
+            logger.info("Loading existing vector database...")
+            self.vectors = FAISS.load_local(self.vector_db_path, self.embedding_model, allow_dangerous_deserialization=True)
+        else:
+            logger.info("Creating new vector database from Excel file...")
+            documents = self.load_excel_documents()
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap)
+            final_documents = text_splitter.split_documents(documents)
 
-        vectors = FAISS.from_documents(final_documents, embedding_model)
-        vectors.save_local(persist_directory)
-        print("Vector database created and saved locally.")
-    
-    return vectors
+            self.vectors = FAISS.from_documents(final_documents, self.embedding_model)
+            self.vectors.save_local(self.vector_db_path)
+            logger.info("Vector database created and saved locally.")
 
-if __name__ == "__main__":
-    print("Building vector database from documents...")
-    onboarding_filepath = './onboarding_template.xlsx'
-    vectors = create_or_load_vector_embedding_for_excel(onboarding_filepath)
-    print("Vector Database is ready.\n")
+    def refresh_vectors(self):
+        """
+        Forces regeneration of the vector database from the Excel file.
+        """
+        if os.path.exists(self.vector_db_path):
+            logger.info("Deleting existing vector database...")
+            os.remove(os.path.join(self.vector_db_path, "index.faiss"))
+            os.remove(os.path.join(self.vector_db_path, "index.pkl"))
+        self.create_or_load_vector_embedding_for_excel()
 
-    user_prompt = input("Enter your query: ")
+    def AskQuestion(self, question: str) -> str:
+        """
+        Answers a user question using the document-based retrieval chain.
 
-    if user_prompt:
-        document_chain = create_stuff_documents_chain(llm, prompt)
-        retriever = vectors.as_retriever()
+        :param question: The user's question as a string.
+        :return: Answer string generated by the language model.
+        """
+        if self.vectors is None:
+            self.create_or_load_vector_embedding_for_excel()
+
+        document_chain = create_stuff_documents_chain(self.llm, self.prompt)
+        retriever = self.vectors.as_retriever()
         retrieval_chain = create_retrieval_chain(retriever, document_chain)
-
-        start = time.process_time()
-        response = retrieval_chain.invoke({'input': user_prompt})
-        print(f"\nResponse time: {time.process_time() - start:.2f} seconds\n")
-
-        print("Answer:")
-        print(response['answer'])
+        response = retrieval_chain.invoke({'input': question})
+        return response['answer']
