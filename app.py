@@ -4,12 +4,14 @@ import io
 from constant import buddy_steps
 import mongoclient
 import ibm_cloud
+from rag_model import MyBuddy
 import utils
 import task_handler
 
 
 @cl.on_message
 async def main(message:str):
+    myBuddy: MyBuddy
     if cl.user_session.get("awaiting_buddy_name"):
         cl.user_session.set("awaiting_buddy_name",False)
         buddy_name = message.content
@@ -56,7 +58,22 @@ async def main(message:str):
             if template_id:
                 cl.user_session.set("template_id", template_id)
                 await save_to_mongo_db(cl.user_session)
-                
+                myBuddy = await MyBuddy(template_id)
+                myBuddy.create_or_load_vector_embedding_for_excel()
+                await cl.Message(content="Template uploaded successfully").send()
+
+    # If not in onboarding flow, treat the message as a general question
+    if not any([
+        cl.user_session.get("awaiting_buddy_name"),
+        cl.user_session.get("awaiting_buddy_email"),
+        cl.user_session.get("awaiting_github-username"),
+        cl.user_session.get("awaiting_team_name"),
+        cl.user_session.get("awaiting_team_template")
+    ]):
+        user_question = message.content.strip()
+        response = await myBuddy.AskQuestion(user_question)
+        await cl.Message(content=response).send()
+
 
 async def save_to_mongo_db(session):
     buddy_name = session.get("buddy_name")
