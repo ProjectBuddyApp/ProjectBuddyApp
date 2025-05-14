@@ -20,78 +20,60 @@ HEADERS = {
     "Accept": "application/vnd.github+json"
 }
 
-def read_csv_and_categorize(csv_file):
-    df = pd.read_csv(csv_file, header=None)
-    categorized_items = []
-    for index, row in df.iterrows():
-        item = {
-            'name': row[0].strip(),
-            'section': row[1].strip(),
-            'item': row[2].strip(),
-            'duration': row[3].strip(),
-            'task_info': row[4].strip(),
-        }
-        categorized_items.append(item)
-
-    return categorized_items
-
-
-async def read_excel(onboarding_excel):
-    df = pd.read_excel(onboarding_excel)
-    df.columns = df.columns.str.strip()
-    df['Section'] = df['Section'].str.strip().str.capitalize()
-    sections = df['Section'].dropna().unique()
-    print(sections)
+async def read_task_from_excel(csv_file):
+    df = pd.read_excel(csv_file, sheet_name="FinalSheet", header=0)
     payloads = []
-    for section in sections:
-        section_df = df[df['Section'] == section]
-        if section_df.empty:
-            continue
+    task_types = df['Task Type'].dropna().unique()
+    for task_type in task_types:
+            task_df = df[df['Task Type'] == task_type]
+            if task_df.empty:
+                continue
+            body = await format_task_body(task_df)
 
-        issue_title = f"[Onboarding] {section} Tasks"
-        issue_body = f"### Subtasks for {section} onboarding:\n\n" + await format_subtasks(section_df)
-
-
-        payload = {
-            "title": issue_title,
-            "body": issue_body,
-        }
-        payloads.append(payload)
+            payload = {
+                "title": task_type.strip(),
+                "body": body,
+            }
+            payloads.append(payload)
     return payloads
 
-async def format_subtasks(section_df):
-    checklist = []
-    for _, row in section_df.iterrows():
-        item = row['Item']
-        duration = row.get('Duration', '')
-        task_info = row.get('Task Info', '')
-        link = row.get('Link/Instructions', '')
+async def format_task_body(task_df):
+    formatted_rows = []
+    for _, row in task_df.iterrows():
+        task_name = row['Task Name'].strip() if pd.notna(row['Task Name']) else ""
+        task_info = row['Task Info'].strip() if pd.notna(row['Task Info']) else ""
+        task_links = row['Task Related Links'].strip() if pd.notna(row['Task Related Links']) else ""
+        task_duration = row['Task Duration'].strip() if pd.notna(row['Task Duration']) else ""
+        additional_info = row['Additional Information'].strip() if pd.notna(row['Additional Information']) else ""
 
-        line = f"- [ ] **{item}**"
-        if pd.notna(duration):
-            line += f" ({duration} day{'s' if duration != 1 else ''})"
-        if pd.notna(task_info):
-            line += f"\n      {task_info.strip()}"
-        if pd.notna(link):
-            line += f"\n      🔗 [Link]({link.strip()})"
-        checklist.append(line)
-    return "\n\n".join(checklist)
+        # Format the row as a checklist item
+        line = f"- [ ] **{task_name}**"
+        if task_duration:
+            line += f" ({task_duration})"
+        if task_info:
+            line += f"\n      {task_info}"
+        if task_links:
+            line += f"\n      🔗 [Link]({task_links})"
+        if additional_info:
+            line += f"\n      {additional_info}"
+
+        formatted_rows.append(line)
+
+    return "\n\n".join(formatted_rows)
 
 
 async def create_github_onboarding_tasks(selected_team):
     file_url = mongoclient.fetch_file_url(selected_team)
     print(file_url)
-    # if the task has is git_issue_required = true, then only create the issue
-    # 
 
     if file_url:
         onboarding_excel = ibm_cloud.fetch_file_from_cos(file_url)
-        print(onboarding_excel)
-        tasks = await read_excel(onboarding_excel)
+        item_lists = await read_task_from_excel(onboarding_excel)
+        print("========> Item list: ", item_lists)
 
         async with httpx.AsyncClient() as client:
             # Create issues asynchronously
-            for task in tasks:
+            for task in item_lists:
                 issue_data = {
                     "title": task["title"],
                     "body": task["body"],

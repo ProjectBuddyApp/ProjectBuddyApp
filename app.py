@@ -126,7 +126,7 @@ async def on_action(action: cl.Action):
 async def handle_file_upload(message: cl.Message,session):
     if message.elements:
         for file in message.elements:
-            if not file.name.lower().endswith(".xlsx"):
+            if not file.name.lower().endswith(".xlsm"):
              await cl.Message(content="❌ Please upload a excel document.").send()
              return
             # ✅ file.path gives you the local path to the uploaded file
