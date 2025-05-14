@@ -20,6 +20,22 @@ HEADERS = {
     "Accept": "application/vnd.github+json"
 }
 
+def read_csv_and_categorize(csv_file):
+    df = pd.read_csv(csv_file, header=None)
+    categorized_items = []
+    for index, row in df.iterrows():
+        item = {
+            'name': row[0].strip(),
+            'section': row[1].strip(),
+            'item': row[2].strip(),
+            'duration': row[3].strip(),
+            'task_info': row[4].strip(),
+        }
+        categorized_items.append(item)
+
+    return categorized_items
+
+
 async def read_excel(onboarding_excel):
     df = pd.read_excel(onboarding_excel)
     df.columns = df.columns.str.strip()
@@ -65,6 +81,9 @@ async def format_subtasks(section_df):
 async def create_github_onboarding_tasks(selected_team):
     file_url = mongoclient.fetch_file_url(selected_team)
     print(file_url)
+    # if the task has is git_issue_required = true, then only create the issue
+    # 
+
     if file_url:
         onboarding_excel = ibm_cloud.fetch_file_from_cos(file_url)
         print(onboarding_excel)
