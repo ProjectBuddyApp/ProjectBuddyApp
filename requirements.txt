@@ -9,4 +9,3 @@ pymongo
 chainlit
 python-docx
 openpyxl
-pandas
