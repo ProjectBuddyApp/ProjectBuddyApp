@@ -72,7 +72,8 @@ async def main(message:str):
         cl.user_session.get("awaiting_team_name"),
         cl.user_session.get("awaiting_team_template")
     ]):
-        user_question = message.content.strip()   
+        user_question = message.content.strip()  
+        print('Calling AskQuestion.') 
         response = AskQuestion(user_question)
         await cl.Message(content=response).send()
 
