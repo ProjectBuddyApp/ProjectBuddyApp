@@ -93,6 +93,7 @@ class MyBuddy:
             final_documents = text_splitter.split_documents(documents)
 
             self.vectors = FAISS.from_documents(final_documents, self.embedding_model)
+            # Add save to bucket logic here
             self.vectors.save_local(self.vector_db_path)
             logger.info("Vector database created and saved locally.")
 

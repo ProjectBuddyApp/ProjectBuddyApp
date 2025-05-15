@@ -58,7 +58,9 @@ async def main(message:str):
             if template_id:
                 cl.user_session.set("template_id", template_id)
                 await save_to_mongo_db(cl.user_session)
-                myBuddy = await MyBuddy(template_id)
+                file = await ibm_cloud.fetch_file_from_cos(template_id)
+                myBuddy = MyBuddy(
+                    file, "/Users/samreennayak/hackthon/ProjectBuddyApp/vector_db")
                 myBuddy.create_or_load_vector_embedding_for_excel()
                 await cl.Message(content="Template uploaded successfully").send()
 
@@ -71,7 +73,13 @@ async def main(message:str):
         cl.user_session.get("awaiting_team_template")
     ]):
         user_question = message.content.strip()
-        response = await myBuddy.AskQuestion(user_question)
+        myBuddy = cl.user_session.get("myBuddy")  # 👈 Retrieve from session
+
+        if not myBuddy:
+            await cl.Message(content="❌ The system couldn't find your onboarding template. Please upload it first.").send()
+            return
+
+        response = await MyBuddy.AskQuestion(user_question)
         await cl.Message(content=response).send()
 
 
