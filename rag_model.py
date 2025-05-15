@@ -121,8 +121,6 @@ def load_vector_db_for_selected_team(team_name):
     global retrieval_chain
 
     faiss_url,pkl_url = mongoclient.fetch_vector_urls(team_name)
-    print(faiss_url)
-    print(pkl_url)
     faiss_file = ibm_cloud.fetch_file_from_cos(faiss_url)
     pkl_file = ibm_cloud.fetch_file_from_cos(pkl_url)
 

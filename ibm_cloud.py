@@ -56,8 +56,6 @@ def save_vector_data(folder_path,team_name):
     
     faiss_url = f"{url}/{team_name}/index.faiss"
     pkl_url = f"{url}/{team_name}/index.pkl"
-    print(team_name)
-    print(faiss_url)
     response_faiss = requests.put(faiss_url, data=index_faiss_content, headers=headers)
     response_pkl = requests.put(pkl_url, data=index_pkl_content, headers=headers)
     if response_faiss.status_code in (200, 201) and response_pkl.status_code in (200, 201):

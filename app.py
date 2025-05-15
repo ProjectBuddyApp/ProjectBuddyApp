@@ -72,11 +72,9 @@ async def main(message:str):
         cl.user_session.get("awaiting_team_name"),
         cl.user_session.get("awaiting_team_template")
     ]):
-        print(cl.user_session)
         user_question = message.content.strip()   
-        print(user_question)    
         response = AskQuestion(user_question)
-        await cl.Message(content=response.join(f"\nFor more information kindly connect to your buddy")).send()
+        await cl.Message(content=response).send()
 
 
 async def save_to_mongo_db(session):
