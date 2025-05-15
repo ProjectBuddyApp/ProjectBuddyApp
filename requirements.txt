@@ -5,3 +5,8 @@ langchain_huggingface
 langchain_community
 pandas
 numpy
+pymongo
+chainlit
+python-docx
+openpyxl
+pandas
