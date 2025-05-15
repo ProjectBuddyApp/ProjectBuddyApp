@@ -51,5 +51,27 @@ def fetch_file_url(team_name):
     else:
         print("Template not found")
 
+def save_vector_metadata_to_mongo(team_name,faiss_url,pkl_url):
+    collection = db["vector_meta_data"]
+    vector_meta_data = {
+        "team_name" : team_name,
+        "faiss_url" : faiss_url,
+        "pkl_url" : pkl_url
+    }
+    result = collection.insert_one(vector_meta_data)
+    print("data has been inserted successfully in vector_meta_data")
+
+
+def fetch_vector_urls(team_name):
+    collection = db["vector_meta_data"]
+    vector_urls = collection.find_one(
+    {"team_name": team_name},
+    {"faiss_url": 1,"pkl_url": 2})
+    print(vector_urls)
+    if vector_urls:
+        return vector_urls["faiss_url"],vector_urls["pkl_url"]
+    else:
+        raise FileNotFoundError("urls not found in mongodb")
+
 
 

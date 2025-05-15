@@ -12,7 +12,10 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 import pandas as pd
 import logging
+import ibm_cloud
 from typing import List
+import shutil
+import mongoclient
 
 # Logging Configuration
 logger = logging.getLogger(__name__)
@@ -27,7 +30,7 @@ PROMPT_TEMPLATE = """
 You are an onboarding assistant helping new employees onboard.
 
 Answer the user's question in a clear, direct, and professional manner using only the information provided in the following context.
-If the context does not contain the exact answer, use your best judgment to provide a helpful and relevant response.
+If the context does not contain the exact answer, use your best judgment from your knowledge to provide a helpful and relevant response.
 
 Always be confident and supportive. Do not mention that the information came from the context. 
 Do not say "based on the context" or "the document says".
@@ -37,87 +40,108 @@ Do not say "based on the context" or "the document says".
 <context>
 Question:{input}
 """
-
-class MyBuddy:
-    def __init__(self, filepath: str, vector_db_path: str, chunk_size: int = 1000, chunk_overlap: int = 200):
-        """
-        Initializes the MyBuddy onboarding assistant.
-
-        param filepath: Path to the Excel onboarding file.
-        param vector_db_path: Path to store or load the vector database.
-        param chunk_size: Size of text chunks for embedding.
-        param chunk_overlap: Overlap between text chunks.
-        """
-        self.onboarding_excel_path = filepath
-        self.vector_db_path = vector_db_path
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-
-        self.groq_api_key = os.getenv("GROQ_API_KEY")
-        if not self.groq_api_key:
-            raise ValueError("GROQ_API_KEY is not set in environment variables.")
-
-        self.embedding_model = HuggingFaceEmbeddings(
+embedding_model = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2",
             model_kwargs={"device": "cpu"},
             encode_kwargs={"normalize_embeddings": True},
         )
+groq_api_key = os.getenv("GROQ_API_KEY")
+llm = ChatGroq(groq_api_key=groq_api_key, model_name="Llama3-8b-8192")
+prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+retrieval_chain = None
 
-        self.llm = ChatGroq(groq_api_key=self.groq_api_key, model_name="Llama3-8b-8192")
-        self.prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+class MyBuddy:
+    def __init__(self, file, chunk_size: int = 1000, chunk_overlap: int = 200):
+        """
+        Initializes the MyBuddy onboarding assistant.
 
-        self.vectors = None
+        param file: Onboarding file.
+        param chunk_size: Size of text chunks for embedding.
+        param chunk_overlap: Overlap between text chunks.
+        """
+        self.onboarding_file = file
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+
+        self.groq_api_key = groq_api_key
+        if not self.groq_api_key:
+            raise ValueError("GROQ_API_KEY is not set in environment variables.")
+
 
     def load_excel_documents(self) -> List[Document]:
-        if not os.path.isfile(self.onboarding_excel_path):
-            raise FileNotFoundError(f"Excel file not found: {self.onboarding_excel_path}")
-
-        df = pd.read_excel(self.onboarding_excel_path)
+        df = pd.read_excel(self.onboarding_file)
         documents = [
             Document(page_content="\n".join([f"{col}: {row[col]}" for col in df.columns]))
             for _, row in df.iterrows()
         ]
         return documents
 
-    def create_or_load_vector_embedding_for_excel(self):
+    def create_or_load_vector_embedding_for_excel(self,team_name):
         """
         Creates or loads vector embeddings from the Excel document.
         """
-        if os.path.exists(self.vector_db_path):
-            logger.info("Loading existing vector database...")
-            self.vectors = FAISS.load_local(self.vector_db_path, self.embedding_model, allow_dangerous_deserialization=True)
-        else:
-            logger.info("Creating new vector database from Excel file...")
-            documents = self.load_excel_documents()
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap)
-            final_documents = text_splitter.split_documents(documents)
+        logger.info("Creating new vector database from Excel file...")
+        documents = self.load_excel_documents()
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap)
+        final_documents = text_splitter.split_documents(documents)
 
-            self.vectors = FAISS.from_documents(final_documents, self.embedding_model)
-            self.vectors.save_local(self.vector_db_path)
-            logger.info("Vector database created and saved locally.")
+        vectors = FAISS.from_documents(final_documents, embedding_model)
+        # Add save to bucket logic here
+        vectors.save_local("./vector-db-local/")
+        print("vector save to local")
+        faiss_url,pkl_url = ibm_cloud.save_vector_data("./vector-db-local",team_name)
+        print("vector save to cloud")
+        mongoclient.save_vector_metadata_to_mongo(team_name,faiss_url,pkl_url)
+        print("vector save to mongo")
+        shutil.rmtree("./vector-db-local/")
+        logger.info("Vector database created and saved locally.")
 
-    def refresh_vectors(self):
-        """
-        Forces regeneration of the vector database from the Excel file.
-        """
-        if os.path.exists(self.vector_db_path):
-            logger.info("Deleting existing vector database...")
-            os.remove(os.path.join(self.vector_db_path, "index.faiss"))
-            os.remove(os.path.join(self.vector_db_path, "index.pkl"))
-        self.create_or_load_vector_embedding_for_excel()
 
-    def AskQuestion(self, question: str) -> str:
-        """
-        Answers a user question using the document-based retrieval chain.
+def AskQuestion(question: str) -> str:
+    """
+    Answers a user question using the document-based retrieval chain.
 
-        :param question: The user's question as a string.
-        :return: Answer string generated by the language model.
-        """
-        if self.vectors is None:
-            self.create_or_load_vector_embedding_for_excel()
+    :param question: The user's question as a string.
+    :return: Answer string generated by the language model.
+    """
+    global retrieval_chain
+    print(retrieval_chain)
+    response = retrieval_chain.invoke({'input': question})
+    print(response)
+    return response['answer']
 
-        document_chain = create_stuff_documents_chain(self.llm, self.prompt)
-        retriever = self.vectors.as_retriever()
-        retrieval_chain = create_retrieval_chain(retriever, document_chain)
-        response = retrieval_chain.invoke({'input': question})
-        return response['answer']
+
+def load_vector_db_for_selected_team(team_name):
+    """
+    Answers a user question using the document-based retrieval chain.
+
+    :param question: The user's question as a string.
+    :return: Answer string generated by the language model.
+    """
+    global retrieval_chain
+
+    faiss_url,pkl_url = mongoclient.fetch_vector_urls(team_name)
+    print(faiss_url)
+    print(pkl_url)
+    faiss_file = ibm_cloud.fetch_file_from_cos(faiss_url)
+    pkl_file = ibm_cloud.fetch_file_from_cos(pkl_url)
+
+    local_folder = "./vector-db-local/"
+    os.makedirs(local_folder, exist_ok=True)  # Create folder if it doesn't exist
+
+    # Define file paths
+    faiss_path = os.path.join(local_folder, "index.faiss")
+    pkl_path = os.path.join(local_folder, "index.pkl")
+
+    # Save FAISS file
+    with open(faiss_path, "wb") as f:
+        f.write(faiss_file.read())
+
+    # Save PKL file
+    with open(pkl_path, "wb") as f:
+        f.write(pkl_file.read())  
+
+    vectors = FAISS.load_local(local_folder, embedding_model, allow_dangerous_deserialization=True)
+    document_chain = create_stuff_documents_chain(llm, prompt)
+    retriever = vectors.as_retriever()
+    retrieval_chain = create_retrieval_chain(retriever, document_chain)
