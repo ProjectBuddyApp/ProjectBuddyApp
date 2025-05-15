@@ -4,9 +4,10 @@ import io
 from constant import buddy_steps
 import mongoclient
 import ibm_cloud
-from rag_model import MyBuddy
+from rag_model import MyBuddy,AskQuestion,load_vector_db_for_selected_team
 import utils
 import task_handler
+
 
 
 @cl.on_message
@@ -57,12 +58,11 @@ async def main(message:str):
             template_id = await handle_file_upload(message,cl.user_session)
             if template_id:
                 cl.user_session.set("template_id", template_id)
+                team_name = cl.user_session.get("team_name")
                 await save_to_mongo_db(cl.user_session)
-                file = await ibm_cloud.fetch_file_from_cos(template_id)
-                myBuddy = MyBuddy(
-                    file, "/Users/samreennayak/hackthon/ProjectBuddyApp/vector_db")
-                myBuddy.create_or_load_vector_embedding_for_excel()
-                await cl.Message(content="Template uploaded successfully").send()
+                file = ibm_cloud.fetch_file_from_cos(template_id)
+                myBuddy = MyBuddy(file)
+                myBuddy.create_or_load_vector_embedding_for_excel(team_name)
 
     # If not in onboarding flow, treat the message as a general question
     if not any([
@@ -72,15 +72,11 @@ async def main(message:str):
         cl.user_session.get("awaiting_team_name"),
         cl.user_session.get("awaiting_team_template")
     ]):
-        user_question = message.content.strip()
-        myBuddy = cl.user_session.get("myBuddy")  # 👈 Retrieve from session
-
-        if not myBuddy:
-            await cl.Message(content="❌ The system couldn't find your onboarding template. Please upload it first.").send()
-            return
-
-        response = await MyBuddy.AskQuestion(user_question)
-        await cl.Message(content=response).send()
+        print(cl.user_session)
+        user_question = message.content.strip()   
+        print(user_question)    
+        response = AskQuestion(user_question)
+        await cl.Message(content=response.join(f"\nFor more information kindly connect to your buddy")).send()
 
 
 async def save_to_mongo_db(session):
@@ -135,6 +131,7 @@ async def handle_action(action: cl.Action):
 async def on_action(action: cl.Action):
     if action.name == "team_select":
         selected_team = action.label
+        load_vector_db_for_selected_team(selected_team)
         buddy_name,buddy_email,buddy_github_username = mongoclient.get_buddy_information(selected_team)
         await cl.Message(
             f"🎉 Welcome to the **{selected_team}** team!\n\n"
