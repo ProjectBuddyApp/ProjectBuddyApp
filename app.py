@@ -46,7 +46,7 @@ async def main(message:str):
         cl.user_session.set("team_name", team_name)
         await cl.Message(content=buddy_steps[3]).send()
         elements = [
-            cl.File(name="template",path="./onboarding_template.xlsx",display="inline",
+            cl.File(name="template",path="./Project_Onboarding.xlsm",display="inline",
         )]
         await cl.Message(content="Here you go", elements=elements).send()
         cl.user_session.set("awaiting_team_template", True)
