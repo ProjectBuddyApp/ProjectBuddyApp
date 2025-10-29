@@ -74,4 +74,44 @@ def fetch_vector_urls(team_name):
         raise FileNotFoundError("urls not found in mongodb")
 
 
+def find_buddy_by_email(buddy_email):
+    """
+    Find a buddy by their email address.
+    
+    :param buddy_email: The email address of the buddy to find
+    :return: The buddy's information as a dictionary, or None if not found
+    """
+    collection = db["team_data"]
+    buddy_doc = collection.find_one(
+        {"buddy_email": buddy_email},
+        {"_id": 0}  # Exclude the MongoDB _id field
+    )
+    
+    if buddy_doc:
+        print(f"Found buddy: {buddy_doc['buddy_name']}")
+        return buddy_doc
+    else:
+        print(f"No buddy found with email: {buddy_email}")
+        return None
+
+def update_buddy_info(buddy_email, update_data):
+    """
+    Update a buddy's information in the database.
+    
+    :param buddy_email: The email address of the buddy to update
+    :param update_data: Dictionary containing the fields to update and their new values
+    :return: True if successful, False otherwise
+    """
+    collection = db["team_data"]
+    result = collection.update_one(
+        {"buddy_email": buddy_email},
+        {"$set": update_data}
+    )
+    
+    if result.modified_count > 0:
+        print(f"Successfully updated buddy information for {buddy_email}")
+        return True
+    else:
+        print(f"Failed to update buddy information for {buddy_email}")
+        return False
 

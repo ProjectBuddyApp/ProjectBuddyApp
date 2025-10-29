@@ -10,3 +10,7 @@ chainlit
 python-docx
 openpyxl
 faiss-cpu
+python-dotenv
+httpx
+requests
+beautifulsoup4

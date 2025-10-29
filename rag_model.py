@@ -1,5 +1,8 @@
 import os
 import time
+import re
+import requests
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -13,7 +16,7 @@ from langchain_core.documents import Document
 import pandas as pd
 import logging
 import ibm_cloud
-from typing import List
+from typing import List, Dict, Any
 import shutil
 import mongoclient
 
@@ -46,7 +49,7 @@ embedding_model = HuggingFaceEmbeddings(
             encode_kwargs={"normalize_embeddings": True},
         )
 groq_api_key = os.getenv("GROQ_API_KEY")
-llm = ChatGroq(groq_api_key=groq_api_key, model_name="Llama3-8b-8192")
+llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.1-8b-instant")
 prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
 retrieval_chain = None
 
@@ -68,12 +71,82 @@ class MyBuddy:
             raise ValueError("GROQ_API_KEY is not set in environment variables.")
 
 
+    def extract_links_from_text(self, text: str) -> List[str]:
+        """
+        Extract URLs from text using regex pattern.
+        
+        :param text: Text to extract URLs from
+        :return: List of extracted URLs
+        """
+        # URL regex pattern
+        url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+'
+        return re.findall(url_pattern, str(text))
+    
+    def fetch_content_from_url(self, url: str) -> str:
+        """
+        Fetch content from a URL.
+        
+        :param url: URL to fetch content from
+        :return: Extracted text content from the URL
+        """
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Remove script and style elements
+            for script in soup(["script", "style"]):
+                script.extract()
+                
+            # Get text
+            text = soup.get_text(separator='\n')
+            
+            # Break into lines and remove leading and trailing space on each
+            lines = (line.strip() for line in text.splitlines())
+            # Break multi-headlines into a line each
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            # Remove blank lines
+            text = '\n'.join(chunk for chunk in chunks if chunk)
+            
+            return f"Content from {url}:\n{text}"
+        except Exception as e:
+            logger.error(f"Error fetching content from {url}: {e}")
+            return f"Failed to fetch content from {url}: {str(e)}"
+    
     def load_excel_documents(self) -> List[Document]:
+        """
+        Load documents from Excel file and extract content from any links found.
+        
+        :return: List of Document objects
+        """
         df = pd.read_excel(self.onboarding_file)
-        documents = [
-            Document(page_content="\n".join([f"{col}: {row[col]}" for col in df.columns]))
-            for _, row in df.iterrows()
-        ]
+        documents = []
+        
+        # Process each row in the Excel file
+        for _, row in df.iterrows():
+            # Create the base document from the row
+            row_content = "\n".join([f"{col}: {row[col]}" for col in df.columns])
+            documents.append(Document(page_content=row_content))
+            
+            # Extract links from each cell in the row
+            for col in df.columns:
+                cell_value = row[col]
+                links = self.extract_links_from_text(cell_value)
+                
+                # Fetch content from each link and create a new document
+                for link in links:
+                    logger.info(f"Found link: {link}, fetching content...")
+                    link_content = self.fetch_content_from_url(link)
+                    if link_content:
+                        documents.append(Document(
+                            page_content=link_content,
+                            metadata={"source": link, "related_to": f"{col}: {cell_value}"}
+                        ))
+        
         return documents
 
     def create_or_load_vector_embedding_for_excel(self,team_name):
@@ -97,6 +170,80 @@ class MyBuddy:
         logger.info("Vector database created and saved locally.")
 
 
+def load_all_teams_data():
+    """
+    Load vector data for all teams from MongoDB.
+    This creates a combined retrieval chain with data from all teams.
+    """
+    global retrieval_chain
+    
+    logger.info("Loading data for all teams...")
+    
+    # Get all team names from MongoDB
+    team_names = mongoclient.get_all_teams()
+    
+    if not team_names:
+        logger.warning("No teams found in the database")
+        return
+    
+    # Create a list to store all vector stores
+    all_vectors = []
+    
+    # Load data for each team
+    for team_name in team_names:
+        try:
+            logger.info(f"Loading data for team: {team_name}")
+            
+            # Fetch vector URLs for this team
+            faiss_url, pkl_url = mongoclient.fetch_vector_urls(team_name)
+            
+            # Fetch files from cloud storage
+            faiss_file = ibm_cloud.fetch_file_from_cos(faiss_url)
+            pkl_file = ibm_cloud.fetch_file_from_cos(pkl_url)
+            
+            # Create a unique folder for this team
+            local_folder = f"./vector-db-local/{team_name}"
+            os.makedirs(local_folder, exist_ok=True)
+            
+            # Define file paths
+            faiss_path = os.path.join(local_folder, "index.faiss")
+            pkl_path = os.path.join(local_folder, "index.pkl")
+            
+            # Save FAISS file
+            with open(faiss_path, "wb") as f:
+                f.write(faiss_file.read())
+            
+            # Save PKL file
+            with open(pkl_path, "wb") as f:
+                f.write(pkl_file.read())
+            
+            # Load the vector store
+            vectors = FAISS.load_local(local_folder, embedding_model, allow_dangerous_deserialization=True)
+            all_vectors.append(vectors)
+            
+        except Exception as e:
+            logger.error(f"Error loading data for team {team_name}: {e}")
+    
+    if not all_vectors:
+        logger.error("No vector stores were loaded successfully")
+        return
+    
+    # Combine all vector stores
+    if len(all_vectors) == 1:
+        combined_vectors = all_vectors[0]
+    else:
+        # Merge all vector stores
+        combined_vectors = all_vectors[0]
+        for vs in all_vectors[1:]:
+            combined_vectors.merge_from(vs)
+    
+    # Create the retrieval chain
+    document_chain = create_stuff_documents_chain(llm, prompt)
+    retriever = combined_vectors.as_retriever()
+    retrieval_chain = create_retrieval_chain(retriever, document_chain)
+    
+    logger.info("Successfully loaded data for all teams")
+
 def AskQuestion(question: str) -> str:
     """
     Answers a user question using the document-based retrieval chain.
@@ -105,9 +252,9 @@ def AskQuestion(question: str) -> str:
     :return: Answer string generated by the language model.
     """
     global retrieval_chain
-    # print(retrieval_chain)
+    
+    # Use the retrieval chain to answer the question
     response = retrieval_chain.invoke({'input': question})
-    # print(response)
     return response['answer']
 
 
