@@ -1,10 +1,9 @@
 import chainlit as cl
 from docx import Document
-import io
 from constant import buddy_steps
 import mongoclient
 import ibm_cloud
-from rag_model import MyBuddy,AskQuestion,load_vector_db_for_selected_team
+from rag_model import MyBuddy, AskQuestion, load_vector_db_for_selected_team, load_all_teams_data
 import utils
 import task_handler
 
@@ -51,6 +50,125 @@ async def main(message:str):
         await cl.Message(content="Here you go", elements=elements).send()
         cl.user_session.set("awaiting_team_template", True)
         return
+        
+    # Existing buddy flow
+    if cl.user_session.get("awaiting_existing_buddy_email"):
+        buddy_email = message.content
+        if not utils.is_valid_email(buddy_email):
+            await cl.Message(content="Please provide valid email address").send()
+            return
+        
+        # Find buddy information in MongoDB
+        buddy_info = mongoclient.find_buddy_by_email(buddy_email)
+        if not buddy_info:
+            await cl.Message(content="Sorry, we couldn't find your information. Please try again or register as a new buddy.").send()
+            cl.user_session.set("awaiting_existing_buddy_email", False)
+            return
+            
+        # Store buddy info in session
+        cl.user_session.set("awaiting_existing_buddy_email", False)
+        cl.user_session.set("existing_buddy_email", buddy_email)
+        cl.user_session.set("existing_buddy_name", buddy_info.get("buddy_name"))
+        cl.user_session.set("existing_buddy_github", buddy_info.get("buddy_github_username"))
+        cl.user_session.set("existing_buddy_team", buddy_info.get("team_name"))
+        
+        # Show update options
+        await cl.Message(
+            content=f"Welcome back, {buddy_info.get('buddy_name')}! What would you like to update?",
+            actions=[
+                cl.Action(
+                    name="update_option",
+                    value="name",
+                    label="Update Name",
+                    payload={"update": "name"}
+                ),
+                cl.Action(
+                    name="update_option",
+                    value="email",
+                    label="Update Email",
+                    payload={"update": "email"}
+                ),
+                cl.Action(
+                    name="update_option",
+                    value="github",
+                    label="Update GitHub Username",
+                    payload={"update": "github"}
+                ),
+                cl.Action(
+                    name="update_option",
+                    value="excel",
+                    label="Upload New Excel File",
+                    payload={"update": "excel"}
+                )
+            ]
+        ).send()
+        return
+        
+    # Handle update options for existing buddy
+    if cl.user_session.get("awaiting_update_name"):
+        cl.user_session.set("awaiting_update_name", False)
+        new_name = message.content
+        cl.user_session.set("new_buddy_name", new_name)
+        
+        # Update in MongoDB
+        mongoclient.update_buddy_info(
+            cl.user_session.get("existing_buddy_email"),
+            {"buddy_name": new_name}
+        )
+        
+        await cl.Message(content=f"Your name has been updated to {new_name}. Is there anything else you'd like to update?").send()
+        return
+        
+    if cl.user_session.get("awaiting_update_email"):
+        new_email = message.content
+        if not utils.is_valid_email(new_email):
+            await cl.Message(content="Please provide valid email address").send()
+            return
+            
+        cl.user_session.set("awaiting_update_email", False)
+        cl.user_session.set("new_buddy_email", new_email)
+        
+        # Update in MongoDB
+        old_email = cl.user_session.get("existing_buddy_email")
+        mongoclient.update_buddy_info(old_email, {"buddy_email": new_email})
+        cl.user_session.set("existing_buddy_email", new_email)
+        
+        await cl.Message(content=f"Your email has been updated to {new_email}. Is there anything else you'd like to update?").send()
+        return
+        
+    if cl.user_session.get("awaiting_update_github"):
+        cl.user_session.set("awaiting_update_github", False)
+        new_github = message.content
+        cl.user_session.set("new_buddy_github", new_github)
+        
+        # Update in MongoDB
+        mongoclient.update_buddy_info(
+            cl.user_session.get("existing_buddy_email"),
+            {"buddy_github_username": new_github}
+        )
+        
+        await cl.Message(content=f"Your GitHub username has been updated to {new_github}. Is there anything else you'd like to update?").send()
+        return
+        
+    if cl.user_session.get("awaiting_update_excel"):
+        if message.elements:
+            team_name = cl.user_session.get("existing_buddy_team")
+            template_id = await handle_file_upload(message, cl.user_session)
+            if template_id:
+                # Update in MongoDB
+                mongoclient.update_buddy_info(
+                    cl.user_session.get("existing_buddy_email"),
+                    {"template_id": template_id}
+                )
+                
+                # Update vector database
+                file = ibm_cloud.fetch_file_from_cos(template_id)
+                myBuddy = MyBuddy(file)
+                myBuddy.create_or_load_vector_embedding_for_excel(team_name)
+                
+                cl.user_session.set("awaiting_update_excel", False)
+                await cl.Message(content="Your Excel file has been updated successfully. The onboarding information has been refreshed.").send()
+        return
 
     #if some file is uploaded then redirect to handle_upload
     if cl.user_session.get("awaiting_team_template"):
@@ -64,16 +182,21 @@ async def main(message:str):
                 myBuddy = MyBuddy(file)
                 myBuddy.create_or_load_vector_embedding_for_excel(team_name)
 
-    # If not in onboarding flow, treat the message as a general question
+    # If not in any flow, treat the message as a general question
     if not any([
         cl.user_session.get("awaiting_buddy_name"),
         cl.user_session.get("awaiting_buddy_email"),
         cl.user_session.get("awaiting_github-username"),
         cl.user_session.get("awaiting_team_name"),
-        cl.user_session.get("awaiting_team_template")
+        cl.user_session.get("awaiting_team_template"),
+        cl.user_session.get("awaiting_existing_buddy_email"),
+        cl.user_session.get("awaiting_update_name"),
+        cl.user_session.get("awaiting_update_email"),
+        cl.user_session.get("awaiting_update_github"),
+        cl.user_session.get("awaiting_update_excel")
     ]):
-        user_question = message.content.strip()  
-        print('Calling AskQuestion.') 
+        user_question = message.content.strip()
+        print('Calling AskQuestion.')
         response = AskQuestion(user_question)
         await cl.Message(content=response).send()
 
@@ -94,6 +217,8 @@ async def save_to_mongo_db(session):
 
 @cl.on_chat_start
 async def start():
+    # Load data for all teams at application startup
+    load_all_teams_data()
     await cl.Message(content=f"Welcome to IBM!\nAre you a buddy or new joinee?").send()
     # Send buttons
     await cl.Message(
@@ -103,7 +228,13 @@ async def start():
                 name="role_selected",
                 value="Buddy",
                 label="👥 I'm a Buddy",
-                payload={"role": "Buddy"}  # You can put anything here
+                payload={"role": "Buddy"}
+            ),
+            cl.Action(
+                name="role_selected",
+                value="ExistingBuddy",
+                label="👤 I'm an Existing Buddy",
+                payload={"role": "ExistingBuddy"}
             ),
             cl.Action(
                 name="role_selected",
@@ -114,12 +245,35 @@ async def start():
         ]
     ).send()
 
+@cl.action_callback("update_option")
+async def handle_update_option(action: cl.Action):
+    update_type = action.payload.get("update")
+    
+    if update_type == "name":
+        await cl.Message(content="Please enter your new name:").send()
+        cl.user_session.set("awaiting_update_name", True)
+    
+    elif update_type == "email":
+        await cl.Message(content="Please enter your new email address:").send()
+        cl.user_session.set("awaiting_update_email", True)
+    
+    elif update_type == "github":
+        await cl.Message(content="Please enter your new GitHub username:").send()
+        cl.user_session.set("awaiting_update_github", True)
+    
+    elif update_type == "excel":
+        await cl.Message(content="Please upload your new Excel file:").send()
+        cl.user_session.set("awaiting_update_excel", True)
+
 @cl.action_callback("role_selected")
 async def handle_action(action: cl.Action):
     role = action.payload.get("role")
     if role == "Buddy":
-        await cl.Message(content="Awesome! What’s your name, Buddy?").send()
+        await cl.Message(content="Awesome! What's your name, Buddy?").send()
         cl.user_session.set("awaiting_buddy_name", True)
+    elif role == "ExistingBuddy":
+        await cl.Message(content="Welcome back! Please enter your email to identify yourself:").send()
+        cl.user_session.set("awaiting_existing_buddy_email", True)
     elif role == "Joinee":
         team_names = mongoclient.get_all_teams()
         print(team_names)
@@ -147,9 +301,6 @@ async def on_action(action: cl.Action):
 async def handle_file_upload(message: cl.Message,session):
     if message.elements:
         for file in message.elements:
-            if not file.name.lower().endswith(".xlsm"):
-             await cl.Message(content="❌ Please upload a excel document.").send()
-             return
             # ✅ file.path gives you the local path to the uploaded file
             await cl.Message(content=f"Thanks for uploading we will review it").send()
             # You can now open/read/process it like any local file
