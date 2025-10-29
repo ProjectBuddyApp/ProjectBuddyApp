@@ -6,6 +6,7 @@ import ibm_cloud
 from rag_model import MyBuddy, AskQuestion, load_vector_db_for_selected_team, load_all_teams_data
 import utils
 import task_handler
+import email_integration
 
 
 
@@ -182,6 +183,56 @@ async def main(message:str):
                 myBuddy = MyBuddy(file)
                 myBuddy.create_or_load_vector_embedding_for_excel(team_name)
 
+    # Handle joinee email input
+    if cl.user_session.get("awaiting_joinee_email"):
+        joinee_email = message.content
+        if not utils.is_valid_email(joinee_email):
+            await cl.Message(content="Please provide valid email address").send()
+            return
+            
+        cl.user_session.set("awaiting_joinee_email", False)
+        cl.user_session.set("joinee_email", joinee_email)
+        
+        # Get team and buddy information
+        selected_team = cl.user_session.get("selected_team")
+        buddy_name, buddy_email, buddy_github_username = mongoclient.get_buddy_information(selected_team)
+        
+        # Create GitHub tasks
+        tasks = await task_handler.create_github_onboarding_tasks(selected_team)
+        
+        # Send emails to buddy and joinee
+        buddy_email_result = email_integration.notify_buddy_about_new_joinee(
+            buddy_email=buddy_email,
+            joinee_email=joinee_email,
+            team_name=selected_team,
+            tasks=tasks
+        )
+        
+        joinee_email_result = email_integration.send_welcome_email_to_joinee(
+            joinee_email=joinee_email,
+            buddy_email=buddy_email,
+            buddy_name=buddy_name,
+            team_name=selected_team,
+            tasks=tasks
+        )
+        
+        # Display welcome message to joinee
+        await cl.Message(
+            f"🎉 Welcome to the **{selected_team}** team!\n\n"
+            f"Your onboarding buddy is **{buddy_name}**, "
+            f"and their W3 ID is `{buddy_email}`.\n\n"
+            f"They'll help you get settled in — don't hesitate to reach out!"
+        ).send()
+        
+        # Notify about GitHub tasks
+        await cl.Message(content="✅ We've set up your onboarding tasks in GitHub! Check your assigned issues.").send()
+        
+        # Notify about emails
+        if buddy_email_result or joinee_email_result:
+            await cl.Message(content="📧 Welcome emails have been sent to you and your buddy with onboarding information.").send()
+        
+        return
+    
     # If not in any flow, treat the message as a general question
     if not any([
         cl.user_session.get("awaiting_buddy_name"),
@@ -193,7 +244,8 @@ async def main(message:str):
         cl.user_session.get("awaiting_update_name"),
         cl.user_session.get("awaiting_update_email"),
         cl.user_session.get("awaiting_update_github"),
-        cl.user_session.get("awaiting_update_excel")
+        cl.user_session.get("awaiting_update_excel"),
+        cl.user_session.get("awaiting_joinee_email")
     ]):
         user_question = message.content.strip()
         print('Calling AskQuestion.')
@@ -285,15 +337,13 @@ async def on_action(action: cl.Action):
     if action.name == "team_select":
         selected_team = action.label
         load_vector_db_for_selected_team(selected_team)
-        buddy_name,buddy_email,buddy_github_username = mongoclient.get_buddy_information(selected_team)
-        await cl.Message(
-            f"🎉 Welcome to the **{selected_team}** team!\n\n"
-            f"Your onboarding buddy is **{buddy_name}**, "
-            f"and their W3 ID is `{buddy_email}`.\n\n"
-            f"They'll help you get settled in — don't hesitate to reach out!"
-            ).send()
-        await task_handler.create_github_onboarding_tasks(selected_team)  
-        await cl.Message(content="✅ We've set up your onboarding tasks in GitHub! Check your assigned issues.").send()
+        
+        # Store selected team in session
+        cl.user_session.set("selected_team", selected_team)
+        
+        # Ask for joinee's email
+        await cl.Message(content="Please enter your email address:").send()
+        cl.user_session.set("awaiting_joinee_email", True)
         
 
 
