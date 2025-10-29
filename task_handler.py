@@ -65,6 +65,8 @@ async def format_task_body(task_df):
 async def create_github_onboarding_tasks(selected_team):
     file_url = mongoclient.fetch_file_url(selected_team)
     print(file_url)
+    
+    created_tasks = []  # List to store created task information
 
     if file_url:
         onboarding_excel = ibm_cloud.fetch_file_from_cos(file_url)
@@ -89,8 +91,16 @@ async def create_github_onboarding_tasks(selected_team):
                     success_message = f"Issue '{issue_url}' created successfully."
                     print(success_message)
                     await cl.Message(content=success_message).send()  # Send success message with link to chat
+                    
+                    # Add task to created_tasks list
+                    created_tasks.append({
+                        "title": task["title"],
+                        "url": issue_url
+                    })
                 else:
                     error_message = f"Failed to create issue '{task['title']}': {response.json()}"
                     print(error_message)
                     await cl.Message(content=error_message).send()  # Send failure message to chat
+    
+    return created_tasks  # Return the list of created tasks
 
