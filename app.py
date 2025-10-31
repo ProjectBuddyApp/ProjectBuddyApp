@@ -197,7 +197,15 @@ async def main(message:str):
         selected_team = cl.user_session.get("selected_team")
         buddy_name, buddy_email, buddy_github_username = mongoclient.get_buddy_information(selected_team)
         
-        # Create GitHub tasks
+        # Display welcome message to joinee FIRST
+        await cl.Message(
+            f"🎉 Welcome to the **{selected_team}** team!\n\n"
+            f"Your onboarding buddy is **{buddy_name}**, "
+            f"and their W3 ID is `{buddy_email}`.\n\n"
+            f"They'll help you get settled in — don't hesitate to reach out!"
+        ).send()
+        
+        # Create GitHub tasks (this will send messages for each issue)
         tasks = await task_handler.create_github_onboarding_tasks(selected_team)
         
         # Send emails to buddy and joinee
@@ -215,14 +223,6 @@ async def main(message:str):
             team_name=selected_team,
             tasks=tasks
         )
-        
-        # Display welcome message to joinee
-        await cl.Message(
-            f"🎉 Welcome to the **{selected_team}** team!\n\n"
-            f"Your onboarding buddy is **{buddy_name}**, "
-            f"and their W3 ID is `{buddy_email}`.\n\n"
-            f"They'll help you get settled in — don't hesitate to reach out!"
-        ).send()
         
         # Notify about GitHub tasks
         await cl.Message(content="✅ We've set up your onboarding tasks in GitHub! Check your assigned issues.").send()

@@ -4,6 +4,10 @@ import re
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from ibm_watsonx_ai import Credentials
+from ibm_watsonx_ai.foundation_models import Embeddings
+from ibm_watsonx_ai.metanames import EmbedTextParamsMetaNames as EmbedParams
+from ibm_watsonx_ai.foundation_models.utils.enums import EmbeddingTypes
 from langchain_groq import ChatGroq
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -11,7 +15,6 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains import create_retrieval_chain
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFDirectoryLoader
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 import pandas as pd
 import logging
@@ -43,11 +46,65 @@ Do not say "based on the context" or "the document says".
 <context>
 Question:{input}
 """
-embedding_model = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
+# IBM watsonx.ai credentials for embeddings
+watsonx_api_key = os.getenv("WATSONX_API_KEY")
+watsonx_project_id = os.getenv("WATSONX_PROJECT_ID")
+watsonx_url = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+
+# Check if we have Watson credentials
+if not watsonx_project_id:
+    raise ValueError("WATSONX_PROJECT_ID must be set in environment variables")
+
+if not watsonx_api_key:
+    raise ValueError("WATSONX_API_KEY must be set in environment variables")
+
+# Configure Watson embedding parameters
+embed_params = {
+    EmbedParams.TRUNCATE_INPUT_TOKENS: 512,
+    EmbedParams.RETURN_OPTIONS: {
+        'input_text': False
+    }
+}
+
+# Initialize Watson Embeddings
+logger.info("Initializing IBM Watson AI Embeddings...")
+_watson_embeddings = Embeddings(
+    model_id=EmbeddingTypes.IBM_SLATE_125M_ENG,
+    params=embed_params,
+    credentials=Credentials(
+        api_key=watsonx_api_key,
+        url=watsonx_url
+    ),
+    project_id=watsonx_project_id,
+    batch_size=1000,
+    concurrency_limit=5,
+    persistent_connection=True
+)
+logger.info("Watson Embeddings initialized successfully")
+
+# Create a wrapper class to make Watson Embeddings compatible with LangChain FAISS
+class WatsonEmbeddingsWrapper:
+    """Wrapper to make Watson Embeddings compatible with LangChain's FAISS"""
+    
+    def __init__(self, watson_embeddings):
+        self.watson_embeddings = watson_embeddings
+    
+    def embed_documents(self, texts):
+        """Embed a list of documents"""
+        return self.watson_embeddings.embed_documents(texts)
+    
+    def embed_query(self, text):
+        """Embed a single query"""
+        return self.watson_embeddings.embed_query(text)
+    
+    def __call__(self, text):
+        """Make the object callable for FAISS compatibility"""
+        return self.embed_query(text)
+
+# Create the wrapper instance
+embedding_model = WatsonEmbeddingsWrapper(_watson_embeddings)
+
+# Initialize Groq LLM
 groq_api_key = os.getenv("GROQ_API_KEY")
 llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.1-8b-instant")
 prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
