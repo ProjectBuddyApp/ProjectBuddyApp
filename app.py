@@ -8,6 +8,9 @@ import utils
 import task_handler
 import email_integration
 
+# Import startup_init to load vector data once at application startup
+import startup_init
+
 
 
 @cl.on_message
@@ -269,8 +272,8 @@ async def save_to_mongo_db(session):
 
 @cl.on_chat_start
 async def start():
-    # Load data for all teams at application startup
-    load_all_teams_data()
+    # Vector data is already loaded at application startup via startup_init module
+    # No need to call load_all_teams_data() here anymore - it's cached and ready to use
     await cl.Message(content=f"Welcome to IBM!\nAre you a buddy or new joinee?").send()
     # Send buttons
     await cl.Message(
