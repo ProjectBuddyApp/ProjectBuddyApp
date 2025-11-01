@@ -7,6 +7,7 @@ from rag_model import MyBuddy, AskQuestion, load_vector_db_for_selected_team, lo
 import utils
 import task_handler
 import email_integration
+import github_handler
 
 # Import startup_init to load vector data once at application startup
 import startup_init
@@ -186,6 +187,57 @@ async def main(message:str):
                 myBuddy = MyBuddy(file)
                 myBuddy.create_or_load_vector_embedding_for_excel(team_name)
 
+    # Handle Teams Administrator GitHub link input
+    if cl.user_session.get("awaiting_github_repo_link"):
+        github_link = message.content
+        cl.user_session.set("awaiting_github_repo_link", False)
+        
+        # Validate GitHub link format
+        if not ("github.com" in github_link or "raw.githubusercontent.com" in github_link):
+            await cl.Message(content="Please provide a valid GitHub repository link.").send()
+            cl.user_session.set("awaiting_github_repo_link", True)
+            return
+        
+        cl.user_session.set("github_repo_link", github_link)
+        
+        # Process the GitHub repository
+        await cl.Message(content="Thank you! We will proceed with the repository you provided.").send()
+        
+        try:
+            # Fetch templates from GitHub
+            templates = github_handler.fetch_github_templates(github_link)
+            
+            if not templates:
+                await cl.Message(content="❌ Failed to fetch templates. Please check the repository structure and try again.").send()
+                return
+            
+            # Upload templates to IBM Cloud
+            uploaded_urls = ibm_cloud.upload_templates_to_cos(templates)
+            
+            # Store URLs in MongoDB
+            for template in uploaded_urls['common']:
+                mongoclient.insert_common_template(template['name'], template['url'], template['path'])
+            
+            for template in uploaded_urls['product']:
+                mongoclient.insert_product_template(template['name'], template['url'], template['path'])
+            
+            for template in uploaded_urls['teams']:
+                mongoclient.insert_team_template(template['name'], template['url'], template['path'])
+            
+            total_count = len(uploaded_urls['common']) + len(uploaded_urls['product']) + len(uploaded_urls['teams'])
+            
+            if total_count > 0:
+                await cl.Message(content=f"✅ Sounds good! {total_count} templates have been successfully uploaded to IBM Cloud and stored in MongoDB.").send()
+            else:
+                await cl.Message(content="❌ No templates were uploaded. Please check the repository structure.").send()
+                
+        except Exception as e:
+            await cl.Message(content=f"❌ Error processing repository: {str(e)}").send()
+            import traceback
+            traceback.print_exc()
+        
+        return
+    
     # Handle joinee email input
     if cl.user_session.get("awaiting_joinee_email"):
         joinee_email = message.content
@@ -297,6 +349,12 @@ async def start():
                 label="🧑‍💼 I'm a New Joinee",
                 payload={"role": "Joinee"}
             ),
+            cl.Action(
+                name="role_selected",
+                value="TeamsAdmin",
+                label="🔧 Teams Administrator",
+                payload={"role": "TeamsAdmin"}
+            ),
         ]
     ).send()
 
@@ -329,6 +387,9 @@ async def handle_action(action: cl.Action):
     elif role == "ExistingBuddy":
         await cl.Message(content="Welcome back! Please enter your email to identify yourself:").send()
         cl.user_session.set("awaiting_existing_buddy_email", True)
+    elif role == "TeamsAdmin":
+        await cl.Message(content="🔧 Welcome, Teams Administrator!\n\nPlease provide the GitHub repository link containing your onboarding templates.\n\nThe repository should have an 'onboarding' folder with the following structure:\n- child/\n- product/\n- teams/\n- epic.md").send()
+        cl.user_session.set("awaiting_github_repo_link", True)
     elif role == "Joinee":
         team_names = mongoclient.get_all_teams()
         print(team_names)
@@ -348,6 +409,7 @@ async def on_action(action: cl.Action):
         await cl.Message(content="Please enter your email address:").send()
         cl.user_session.set("awaiting_joinee_email", True)
         
+
 
 
 

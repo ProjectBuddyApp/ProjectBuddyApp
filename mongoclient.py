@@ -115,3 +115,81 @@ def update_buddy_info(buddy_email, update_data):
         print(f"Failed to update buddy information for {buddy_email}")
         return False
 
+
+
+def insert_common_template(template_name, ibm_cloud_url, file_path):
+    """
+    Insert a common template (child folder files and epic.md) into MongoDB.
+    
+    :param template_name: Name of the template file
+    :param ibm_cloud_url: IBM Cloud Object Storage URL
+    :param file_path: Path within the bucket (e.g., 'child/file.md' or 'epic.md')
+    :return: Inserted document ID
+    """
+    collection = db["common-templates"]
+    template_data = {
+        "template_name": template_name,
+        "ibm_cloud_url": ibm_cloud_url,
+        "file_path": file_path
+    }
+    result = collection.insert_one(template_data)
+    print(f"Common template '{template_name}' inserted successfully")
+    return str(result.inserted_id)
+
+
+def insert_product_template(template_name, ibm_cloud_url, file_path):
+    """
+    Insert a product template into MongoDB.
+    
+    :param template_name: Name of the template file
+    :param ibm_cloud_url: IBM Cloud Object Storage URL
+    :param file_path: Path within the bucket (e.g., 'product/file.md')
+    :return: Inserted document ID
+    """
+    collection = db["product"]
+    template_data = {
+        "template_name": template_name,
+        "ibm_cloud_url": ibm_cloud_url,
+        "file_path": file_path
+    }
+    result = collection.insert_one(template_data)
+    print(f"Product template '{template_name}' inserted successfully")
+    return str(result.inserted_id)
+
+
+def insert_team_template(template_name, ibm_cloud_url, file_path):
+    """
+    Insert a team template into MongoDB.
+    
+    :param template_name: Name of the template file
+    :param ibm_cloud_url: IBM Cloud Object Storage URL
+    :param file_path: Path within the bucket (e.g., 'teams/file.md')
+    :return: Inserted document ID
+    """
+    collection = db["teams"]
+    template_data = {
+        "template_name": template_name,
+        "ibm_cloud_url": ibm_cloud_url,
+        "file_path": file_path
+    }
+    result = collection.insert_one(template_data)
+    print(f"Team template '{template_name}' inserted successfully")
+    return str(result.inserted_id)
+
+
+def get_all_common_templates():
+    """Get all common templates from MongoDB."""
+    collection = db["common-templates"]
+    return list(collection.find({}, {"_id": 0}))
+
+
+def get_all_product_templates():
+    """Get all product templates from MongoDB."""
+    collection = db["product"]
+    return list(collection.find({}, {"_id": 0}))
+
+
+def get_all_team_templates():
+    """Get all team templates from MongoDB."""
+    collection = db["teams"]
+    return list(collection.find({}, {"_id": 0}))
