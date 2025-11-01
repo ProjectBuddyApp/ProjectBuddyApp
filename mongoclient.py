@@ -193,3 +193,88 @@ def get_all_team_templates():
     """Get all team templates from MongoDB."""
     collection = db["teams"]
     return list(collection.find({}, {"_id": 0}))
+
+
+def insert_team_details(team_name, team_type, buddy_name, buddy_email, manager_name, manager_email, team_lead_name, team_lead_email):
+    """
+    Insert or update team details (buddy, manager, team lead information).
+    
+    :param team_name: Name of the team (without .md extension)
+    :param team_type: Type of team ('product' or 'teams')
+    :param buddy_name: Name of the buddy
+    :param buddy_email: Email of the buddy
+    :param manager_name: Name of the manager
+    :param manager_email: Email of the manager
+    :param team_lead_name: Name of the team lead
+    :param team_lead_email: Email of the team lead
+    :return: Result of the operation
+    """
+    from datetime import datetime
+    
+    collection = db["team_details"]
+    team_details = {
+        "team_name": team_name,
+        "team_type": team_type,
+        "buddy_name": buddy_name,
+        "buddy_email": buddy_email,
+        "manager_name": manager_name,
+        "manager_email": manager_email,
+        "team_lead_name": team_lead_name,
+        "team_lead_email": team_lead_email,
+        "updated_at": datetime.utcnow().isoformat()
+    }
+    
+    # Use upsert to insert or update
+    result = collection.update_one(
+        {"team_name": team_name, "team_type": team_type},
+        {"$set": team_details, "$setOnInsert": {"created_at": datetime.utcnow().isoformat()}},
+        upsert=True
+    )
+    
+    if result.upserted_id:
+        print(f"Team details for '{team_name}' inserted successfully")
+    else:
+        print(f"Team details for '{team_name}' updated successfully")
+    
+    return result
+
+
+def get_team_details(team_name, team_type):
+    """
+    Get team details by team name and type.
+    
+    :param team_name: Name of the team
+    :param team_type: Type of team ('product' or 'teams')
+    :return: Team details dictionary or None
+    """
+    collection = db["team_details"]
+    team_details = collection.find_one(
+        {"team_name": team_name, "team_type": team_type},
+        {"_id": 0}
+    )
+    return team_details
+
+
+def get_all_team_names_from_templates():
+    """
+    Get all team names from product and teams collections (without .md extension).
+    
+    :return: Dictionary with 'product' and 'teams' lists
+    """
+    product_collection = db["product"]
+    teams_collection = db["teams"]
+    
+    # Get product team names
+    product_templates = product_collection.find({}, {"template_name": 1, "_id": 0})
+    product_names = [t["template_name"].replace(".md", "") for t in product_templates if t.get("template_name")]
+    
+    # Get team names
+    team_templates = teams_collection.find({}, {"template_name": 1, "_id": 0})
+    team_names = [t["template_name"].replace(".md", "") for t in team_templates if t.get("template_name")]
+    
+    return {
+        "product": sorted(product_names),
+        "teams": sorted(team_names)
+    }
+
+

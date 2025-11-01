@@ -238,6 +238,113 @@ async def main(message:str):
         
         return
     
+    # Handle field update for existing team details
+    if cl.user_session.get("awaiting_field_update"):
+        new_value = message.content
+        field = cl.user_session.get("updating_field")
+        team_name = cl.user_session.get("selected_config_team")
+        team_type = cl.user_session.get("selected_config_team_type")
+        
+        # Validate email if updating buddy_email
+        if field == "buddy_email" and not utils.is_valid_email(new_value):
+            await cl.Message(content="Please provide a valid email address").send()
+            return
+        
+        cl.user_session.set("awaiting_field_update", False)
+        
+        # Get existing details
+        existing_details = mongoclient.get_team_details(team_name, team_type)
+        
+        if existing_details:
+            # Update only the specific field
+            update_data = {
+                "team_name": team_name,
+                "team_type": team_type,
+                "buddy_name": existing_details.get("buddy_name"),
+                "buddy_email": existing_details.get("buddy_email"),
+                "manager_name": existing_details.get("manager_name"),
+                "manager_email": existing_details.get("manager_email", ""),
+                "team_lead_name": existing_details.get("team_lead_name"),
+                "team_lead_email": existing_details.get("team_lead_email", "")
+            }
+            
+            # Update the specific field
+            if field == "buddy_name":
+                update_data["buddy_name"] = new_value
+            elif field == "buddy_email":
+                update_data["buddy_email"] = new_value
+            elif field == "manager_name":
+                update_data["manager_name"] = new_value
+            elif field == "team_lead_name":
+                update_data["team_lead_name"] = new_value
+            
+            # Save to MongoDB
+            mongoclient.insert_team_details(
+                update_data["team_name"],
+                update_data["team_type"],
+                update_data["buddy_name"],
+                update_data["buddy_email"],
+                update_data["manager_name"],
+                update_data["manager_email"],
+                update_data["team_lead_name"],
+                update_data["team_lead_email"]
+            )
+            
+            field_display = field.replace("_", " ").title()
+            await cl.Message(content=f"✅ {field_display} for '{team_name}' has been updated successfully!").send()
+        else:
+            await cl.Message(content="❌ Error: Team details not found.").send()
+        
+        return
+    
+    # Handle Configure Team Details flow
+    if cl.user_session.get("awaiting_team_detail_buddy_name"):
+        buddy_name = message.content
+        cl.user_session.set("awaiting_team_detail_buddy_name", False)
+        cl.user_session.set("team_detail_buddy_name", buddy_name)
+        await cl.Message(content="Please enter the buddy's email:").send()
+        cl.user_session.set("awaiting_team_detail_buddy_email", True)
+        return
+    
+    if cl.user_session.get("awaiting_team_detail_buddy_email"):
+        buddy_email = message.content
+        if not utils.is_valid_email(buddy_email):
+            await cl.Message(content="Please provide a valid email address").send()
+            return
+        cl.user_session.set("awaiting_team_detail_buddy_email", False)
+        cl.user_session.set("team_detail_buddy_email", buddy_email)
+        await cl.Message(content="Please enter the manager's name:").send()
+        cl.user_session.set("awaiting_team_detail_manager_name", True)
+        return
+    
+    if cl.user_session.get("awaiting_team_detail_manager_name"):
+        manager_name = message.content
+        cl.user_session.set("awaiting_team_detail_manager_name", False)
+        cl.user_session.set("team_detail_manager_name", manager_name)
+        await cl.Message(content="Please enter the team lead's name:").send()
+        cl.user_session.set("awaiting_team_detail_lead_name", True)
+        return
+    
+    if cl.user_session.get("awaiting_team_detail_lead_name"):
+        lead_name = message.content
+        cl.user_session.set("awaiting_team_detail_lead_name", False)
+        cl.user_session.set("team_detail_lead_name", lead_name)
+        
+        # Save all team details to MongoDB
+        team_name = cl.user_session.get("selected_config_team")
+        team_type = cl.user_session.get("selected_config_team_type")
+        buddy_name = cl.user_session.get("team_detail_buddy_name")
+        buddy_email = cl.user_session.get("team_detail_buddy_email")
+        manager_name = cl.user_session.get("team_detail_manager_name")
+        
+        mongoclient.insert_team_details(
+            team_name, team_type, buddy_name, buddy_email,
+            manager_name, "", lead_name, ""
+        )
+        
+        await cl.Message(content=f"✅ Team details for '{team_name}' have been saved successfully!").send()
+        return
+    
     # Handle joinee email input
     if cl.user_session.get("awaiting_joinee_email"):
         joinee_email = message.content
@@ -355,6 +462,12 @@ async def start():
                 label="🔧 Teams Administrator",
                 payload={"role": "TeamsAdmin"}
             ),
+            cl.Action(
+                name="role_selected",
+                value="ConfigureTeam",
+                label="⚙️ Configure Team Details",
+                payload={"role": "ConfigureTeam"}
+            ),
         ]
     ).send()
 
@@ -390,11 +503,142 @@ async def handle_action(action: cl.Action):
     elif role == "TeamsAdmin":
         await cl.Message(content="🔧 Welcome, Teams Administrator!\n\nPlease provide the GitHub repository link containing your onboarding templates.\n\nThe repository should have an 'onboarding' folder with the following structure:\n- child/\n- product/\n- teams/\n- epic.md").send()
         cl.user_session.set("awaiting_github_repo_link", True)
+    elif role == "ConfigureTeam":
+        # Get all team names from templates
+        team_names_dict = mongoclient.get_all_team_names_from_templates()
+        
+        # Combine product and teams into one list with type info
+        all_teams = []
+        for team in team_names_dict['product']:
+            all_teams.append({"name": team, "type": "product"})
+        for team in team_names_dict['teams']:
+            all_teams.append({"name": team, "type": "teams"})
+        
+        if not all_teams:
+            await cl.Message(content="❌ No teams found. Please upload templates first using Teams Administrator option.").send()
+            return
+        
+        # Create action buttons for all teams
+        team_actions = [
+            cl.Action(
+                name="config_team_select",
+                value=f"{team['name']}|{team['type']}",
+                label=team['name'],
+                payload={"team_name": team['name'], "team_type": team['type']}
+            )
+            for team in all_teams
+        ]
+        
+        await cl.Message(
+            content="⚙️ Configure Team Details\n\nSelect a team to configure:",
+            actions=team_actions
+        ).send()
     elif role == "Joinee":
         team_names = mongoclient.get_all_teams()
         print(team_names)
         options = [cl.Action(name="team_select",label=str(name), value=str(name),payload={}) for name in team_names if name]
         await cl.Message(content="Welcome aboard! Let's get you started. 🚀 \nSelect your team:",actions=options).send()
+
+@cl.action_callback("config_team_select")
+async def handle_config_team_select(action: cl.Action):
+    team_name = action.payload.get("team_name")
+    team_type = action.payload.get("team_type")
+    
+    # Store in session
+    cl.user_session.set("selected_config_team", team_name)
+    cl.user_session.set("selected_config_team_type", team_type)
+    
+    # Check if team details already exist
+    existing_details = mongoclient.get_team_details(team_name, team_type)
+    
+    if existing_details:
+        # Show existing details and ask if user wants to edit
+        await cl.Message(
+            content=f"📋 Current details for **{team_name}**:\n\n"
+                    f"**Buddy:** {existing_details.get('buddy_name')} ({existing_details.get('buddy_email')})\n"
+                    f"**Manager:** {existing_details.get('manager_name')}\n"
+                    f"**Team Lead:** {existing_details.get('team_lead_name')}\n\n"
+                    f"Would you like to update these details?",
+            actions=[
+                cl.Action(
+                    name="edit_team_details",
+                    value="yes",
+                    label="✏️ Edit Details",
+                    payload={"edit": True}
+                ),
+                cl.Action(
+                    name="edit_team_details",
+                    value="no",
+                    label="❌ Cancel",
+                    payload={"edit": False}
+                )
+            ]
+        ).send()
+    else:
+        # No existing details, start collecting
+        await cl.Message(content=f"⚙️ Configuring details for **{team_name}**\n\nPlease enter the buddy's name:").send()
+        cl.user_session.set("awaiting_team_detail_buddy_name", True)
+
+@cl.action_callback("edit_team_details")
+async def handle_edit_team_details(action: cl.Action):
+    should_edit = action.payload.get("edit")
+    
+    if should_edit:
+        team_name = cl.user_session.get("selected_config_team")
+        # Show field selection options
+        await cl.Message(
+            content=f"✏️ Which field would you like to update for **{team_name}**?",
+            actions=[
+                cl.Action(
+                    name="field_to_update",
+                    value="buddy_name",
+                    label="Buddy Name",
+                    payload={"field": "buddy_name"}
+                ),
+                cl.Action(
+                    name="field_to_update",
+                    value="buddy_email",
+                    label="Buddy Email",
+                    payload={"field": "buddy_email"}
+                ),
+                cl.Action(
+                    name="field_to_update",
+                    value="manager_name",
+                    label="Manager Name",
+                    payload={"field": "manager_name"}
+                ),
+                cl.Action(
+                    name="field_to_update",
+                    value="team_lead_name",
+                    label="Team Lead Name",
+                    payload={"field": "team_lead_name"}
+                )
+            ]
+        ).send()
+    else:
+        await cl.Message(content="Operation cancelled.").send()
+
+@cl.action_callback("field_to_update")
+async def handle_field_to_update(action: cl.Action):
+    field = action.payload.get("field")
+    team_name = cl.user_session.get("selected_config_team")
+    
+    # Store which field is being updated
+    cl.user_session.set("updating_field", field)
+    
+    # Ask for the new value based on field
+    if field == "buddy_name":
+        await cl.Message(content=f"Please enter the new buddy name for **{team_name}**:").send()
+        cl.user_session.set("awaiting_field_update", True)
+    elif field == "buddy_email":
+        await cl.Message(content=f"Please enter the new buddy email for **{team_name}**:").send()
+        cl.user_session.set("awaiting_field_update", True)
+    elif field == "manager_name":
+        await cl.Message(content=f"Please enter the new manager name for **{team_name}**:").send()
+        cl.user_session.set("awaiting_field_update", True)
+    elif field == "team_lead_name":
+        await cl.Message(content=f"Please enter the new team lead name for **{team_name}**:").send()
+        cl.user_session.set("awaiting_field_update", True)
 
 @cl.action_callback("team_select")
 async def on_action(action: cl.Action):
