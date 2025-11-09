@@ -160,3 +160,56 @@ def send_welcome_email_to_joinee(joinee_email, buddy_email, buddy_name, team_nam
     
     # Send email to joinee with CC to buddy
     return send_email(joinee_email, subject, body, cc_email=buddy_email)
+
+
+def send_links_to_joiner(joiner_email, buddy_email, buddy_name, links_text):
+    """
+    Send important links to a new joiner from their buddy.
+    
+    :param joiner_email: Email of the new joiner
+    :param buddy_email: Email of the buddy
+    :param buddy_name: Name of the buddy
+    :param links_text: Text containing links (one per line or comma-separated)
+    :return: True if successful, False otherwise
+    """
+    # Parse links from text
+    links = []
+    if '\n' in links_text:
+        links = [link.strip() for link in links_text.split('\n') if link.strip()]
+    elif ',' in links_text:
+        links = [link.strip() for link in links_text.split(',') if link.strip()]
+    else:
+        links = [links_text.strip()]
+    
+    # Create email subject
+    subject = f"Important Resources from {buddy_name}"
+    
+    # Create email body
+    body = f"""
+    <html>
+    <body>
+        <h2>Important Resources for Your Onboarding</h2>
+        <p>Hello,</p>
+        <p>Your buddy, <b>{buddy_name}</b>, has shared some important resources to help you with your onboarding:</p>
+        
+        <ul>
+    """
+    
+    for link in links:
+        # Check if it's a URL
+        if link.startswith('http://') or link.startswith('https://'):
+            body += f'<li><a href="{link}">{link}</a></li>\n'
+        else:
+            body += f'<li>{link}</li>\n'
+    
+    body += """
+        </ul>
+        
+        <p>Feel free to reach out to your buddy if you have any questions!</p>
+        <p>Best regards,<br>Your Onboarding Team</p>
+    </body>
+    </html>
+    """
+    
+    # Send email to joiner with CC to buddy
+    return send_email(joiner_email, subject, body, cc_email=buddy_email)

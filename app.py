@@ -1,192 +1,19 @@
 import chainlit as cl
-from docx import Document
-from constant import buddy_steps
 import mongoclient
 import ibm_cloud
-from rag_model import MyBuddy, AskQuestion, load_vector_db_for_selected_team, load_all_teams_data
 import utils
-import task_handler
-import email_integration
 import github_handler
+import markdown_processor
+from rag_model import embedding_model, AskQuestion, load_all_teams_data
+import asyncio
+import threading
 
 # Import startup_init to load vector data once at application startup
 import startup_init
 
 
-
 @cl.on_message
-async def main(message:str):
-    myBuddy: MyBuddy
-    if cl.user_session.get("awaiting_buddy_name"):
-        cl.user_session.set("awaiting_buddy_name",False)
-        buddy_name = message.content
-        cl.user_session.set("buddy_name", buddy_name)
-        await cl.Message(content=buddy_steps[0]).send()
-        cl.user_session.set("awaiting_buddy_email", True)
-        return
-
-    if cl.user_session.get("awaiting_buddy_email"):
-        buddy_email = message.content
-        if not utils.is_valid_email(buddy_email):
-             await cl.Message(content="Please provide valid email address").send()
-             return
-        cl.user_session.set("awaiting_buddy_email",False)
-        cl.user_session.set("buddy_email", buddy_email)
-        await cl.Message(content=buddy_steps[1]).send()
-        cl.user_session.set("awaiting_github-username", True)
-        return
-    
-    if cl.user_session.get("awaiting_github-username"):
-        cl.user_session.set("awaiting_github-username",False)
-        buddy_github_username = message.content
-        cl.user_session.set("buddy_github_username", buddy_github_username)
-        await cl.Message(content=buddy_steps[2]).send()
-        cl.user_session.set("awaiting_team_name", True)
-        return
-
-    if cl.user_session.get("awaiting_team_name"):
-        cl.user_session.set("awaiting_team_name",False)
-        team_name = message.content
-        cl.user_session.set("team_name", team_name)
-        await cl.Message(content=buddy_steps[3]).send()
-        elements = [
-            cl.File(name="template",path="./Project_Onboarding.xlsm",display="inline",
-        )]
-        await cl.Message(content="Here you go", elements=elements).send()
-        cl.user_session.set("awaiting_team_template", True)
-        return
-        
-    # Existing buddy flow
-    if cl.user_session.get("awaiting_existing_buddy_email"):
-        buddy_email = message.content
-        if not utils.is_valid_email(buddy_email):
-            await cl.Message(content="Please provide valid email address").send()
-            return
-        
-        # Find buddy information in MongoDB
-        buddy_info = mongoclient.find_buddy_by_email(buddy_email)
-        if not buddy_info:
-            await cl.Message(content="Sorry, we couldn't find your information. Please try again or register as a new buddy.").send()
-            cl.user_session.set("awaiting_existing_buddy_email", False)
-            return
-            
-        # Store buddy info in session
-        cl.user_session.set("awaiting_existing_buddy_email", False)
-        cl.user_session.set("existing_buddy_email", buddy_email)
-        cl.user_session.set("existing_buddy_name", buddy_info.get("buddy_name"))
-        cl.user_session.set("existing_buddy_github", buddy_info.get("buddy_github_username"))
-        cl.user_session.set("existing_buddy_team", buddy_info.get("team_name"))
-        
-        # Show update options
-        await cl.Message(
-            content=f"Welcome back, {buddy_info.get('buddy_name')}! What would you like to update?",
-            actions=[
-                cl.Action(
-                    name="update_option",
-                    value="name",
-                    label="Update Name",
-                    payload={"update": "name"}
-                ),
-                cl.Action(
-                    name="update_option",
-                    value="email",
-                    label="Update Email",
-                    payload={"update": "email"}
-                ),
-                cl.Action(
-                    name="update_option",
-                    value="github",
-                    label="Update GitHub Username",
-                    payload={"update": "github"}
-                ),
-                cl.Action(
-                    name="update_option",
-                    value="excel",
-                    label="Upload New Excel File",
-                    payload={"update": "excel"}
-                )
-            ]
-        ).send()
-        return
-        
-    # Handle update options for existing buddy
-    if cl.user_session.get("awaiting_update_name"):
-        cl.user_session.set("awaiting_update_name", False)
-        new_name = message.content
-        cl.user_session.set("new_buddy_name", new_name)
-        
-        # Update in MongoDB
-        mongoclient.update_buddy_info(
-            cl.user_session.get("existing_buddy_email"),
-            {"buddy_name": new_name}
-        )
-        
-        await cl.Message(content=f"Your name has been updated to {new_name}. Is there anything else you'd like to update?").send()
-        return
-        
-    if cl.user_session.get("awaiting_update_email"):
-        new_email = message.content
-        if not utils.is_valid_email(new_email):
-            await cl.Message(content="Please provide valid email address").send()
-            return
-            
-        cl.user_session.set("awaiting_update_email", False)
-        cl.user_session.set("new_buddy_email", new_email)
-        
-        # Update in MongoDB
-        old_email = cl.user_session.get("existing_buddy_email")
-        mongoclient.update_buddy_info(old_email, {"buddy_email": new_email})
-        cl.user_session.set("existing_buddy_email", new_email)
-        
-        await cl.Message(content=f"Your email has been updated to {new_email}. Is there anything else you'd like to update?").send()
-        return
-        
-    if cl.user_session.get("awaiting_update_github"):
-        cl.user_session.set("awaiting_update_github", False)
-        new_github = message.content
-        cl.user_session.set("new_buddy_github", new_github)
-        
-        # Update in MongoDB
-        mongoclient.update_buddy_info(
-            cl.user_session.get("existing_buddy_email"),
-            {"buddy_github_username": new_github}
-        )
-        
-        await cl.Message(content=f"Your GitHub username has been updated to {new_github}. Is there anything else you'd like to update?").send()
-        return
-        
-    if cl.user_session.get("awaiting_update_excel"):
-        if message.elements:
-            team_name = cl.user_session.get("existing_buddy_team")
-            template_id = await handle_file_upload(message, cl.user_session)
-            if template_id:
-                # Update in MongoDB
-                mongoclient.update_buddy_info(
-                    cl.user_session.get("existing_buddy_email"),
-                    {"template_id": template_id}
-                )
-                
-                # Update vector database
-                file = ibm_cloud.fetch_file_from_cos(template_id)
-                myBuddy = MyBuddy(file)
-                myBuddy.create_or_load_vector_embedding_for_excel(team_name)
-                
-                cl.user_session.set("awaiting_update_excel", False)
-                await cl.Message(content="Your Excel file has been updated successfully. The onboarding information has been refreshed.").send()
-        return
-
-    #if some file is uploaded then redirect to handle_upload
-    if cl.user_session.get("awaiting_team_template"):
-        if message.elements:
-            template_id = await handle_file_upload(message,cl.user_session)
-            if template_id:
-                cl.user_session.set("template_id", template_id)
-                team_name = cl.user_session.get("team_name")
-                await save_to_mongo_db(cl.user_session)
-                file = ibm_cloud.fetch_file_from_cos(template_id)
-                myBuddy = MyBuddy(file)
-                myBuddy.create_or_load_vector_embedding_for_excel(team_name)
-
+async def main(message: cl.Message):
     # Handle Teams Administrator GitHub link input
     if cl.user_session.get("awaiting_github_repo_link"):
         github_link = message.content
@@ -204,30 +31,96 @@ async def main(message:str):
         await cl.Message(content="Thank you! We will proceed with the repository you provided.").send()
         
         try:
-            # Fetch templates from GitHub
-            templates = github_handler.fetch_github_templates(github_link)
+            # Step 1: Fetch templates from GitHub
+            async with cl.Step(name="Fetching templates from GitHub", type="tool") as step:
+                templates = github_handler.fetch_github_templates(github_link)
+                
+                if not templates:
+                    step.output = "❌ Failed to fetch templates"
+                    await cl.Message(content="❌ Failed to fetch templates. Please check the repository structure and try again.").send()
+                    return
+                
+                step.output = f"✅ Successfully fetched templates from repository"
             
-            if not templates:
-                await cl.Message(content="❌ Failed to fetch templates. Please check the repository structure and try again.").send()
-                return
+            # Step 2: Upload templates to IBM Cloud
+            async with cl.Step(name="Uploading templates to IBM Cloud", type="tool") as step:
+                uploaded_urls = ibm_cloud.upload_templates_to_cos(templates)
+                total_count = len(uploaded_urls['common']) + len(uploaded_urls['product']) + len(uploaded_urls['teams'])
+                step.output = f"✅ Uploaded {total_count} templates to IBM Cloud"
             
-            # Upload templates to IBM Cloud
-            uploaded_urls = ibm_cloud.upload_templates_to_cos(templates)
-            
-            # Store URLs in MongoDB
-            for template in uploaded_urls['common']:
-                mongoclient.insert_common_template(template['name'], template['url'], template['path'])
-            
-            for template in uploaded_urls['product']:
-                mongoclient.insert_product_template(template['name'], template['url'], template['path'])
-            
-            for template in uploaded_urls['teams']:
-                mongoclient.insert_team_template(template['name'], template['url'], template['path'])
-            
-            total_count = len(uploaded_urls['common']) + len(uploaded_urls['product']) + len(uploaded_urls['teams'])
+            # Step 3: Store URLs in MongoDB
+            async with cl.Step(name="Storing template metadata in MongoDB", type="tool") as step:
+                for template in uploaded_urls['common']:
+                    mongoclient.insert_common_template(template['name'], template['url'], template['path'])
+                
+                for template in uploaded_urls['product']:
+                    mongoclient.insert_product_template(template['name'], template['url'], template['path'])
+                
+                for template in uploaded_urls['teams']:
+                    mongoclient.insert_team_template(template['name'], template['url'], template['path'])
+                
+                step.output = f"✅ Stored metadata for {total_count} templates"
             
             if total_count > 0:
-                await cl.Message(content=f"✅ Sounds good! {total_count} templates have been successfully uploaded to IBM Cloud and stored in MongoDB.").send()
+                await cl.Message(content=f"✅ **Thank you!** {total_count} templates have been successfully uploaded").send()
+                
+                # Extract team names from uploaded templates
+                uploaded_teams = {
+                    'product': [t['name'].replace('.md', '') for t in uploaded_urls['product']],
+                    'teams': [t['name'].replace('.md', '') for t in uploaded_urls['teams']]
+                }
+                
+                # Notify user that vector creation is happening in background
+                await cl.Message(
+                    content="🔄 **Vector embeddings are being created in the background.**\n\n"
+                            "This process may take a few minutes depending on the number of templates and URLs to process.\n\n"
+                            "✅ You can continue using the app - the Q&A feature will be updated automatically once processing is complete.\n\n"
+                            ).send()
+                
+                # Start vector creation in background thread
+                def create_vectors_background():
+                    try:
+                        print(f"🚀 Background: Starting vector creation for {len(uploaded_teams['product']) + len(uploaded_teams['teams'])} teams...")
+                        results = markdown_processor.create_vectors_for_uploaded_teams(
+                            embedding_model,
+                            uploaded_teams
+                        )
+                        
+                        success_count = len(results['success'])
+                        total_teams = results['total']
+                        
+                        print(f"✅ Background: Vector creation complete - {success_count}/{total_teams} successful")
+                        
+                        # Reload vectors to make them available for Q&A
+                        if success_count > 0:
+                            print(f"🔄 Background: Loading {success_count} new team vectors...")
+                            load_all_teams_data()
+                            print(f"✅ Background: Vectors loaded successfully!")
+                        
+                    except Exception as e:
+                        print(f"❌ Background: Error creating vectors: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+                
+                # Run in separate thread to not block the UI
+                vector_thread = threading.Thread(target=create_vectors_background, daemon=True)
+                vector_thread.start()
+                
+                # Important reminder about team configuration
+                await cl.Message(
+                    content="🎯 **Important Next Step!**\n\n"
+                            "Your templates are now ready, but there's one crucial step remaining:\n\n"
+                            "**⚙️ Configure Team Details** is essential for the onboarding experience!\n\n"
+                            "Without configuring team details, new joiners won't be able to:\n"
+                            "• 👥 Connect with their assigned buddy\n"
+                            "• 📧 Receive personalized onboarding emails\n"
+                            "• 🤝 Know who their manager and team lead are\n\n"
+                            "**Please go back to the main menu and select '⚙️ Configure Team Details'** to set up:\n"
+                            "✓ Buddy name, github userid and email\n"
+                            "✓ Manager github user id\n"
+                            "✓ Team lead user id\n\n"
+                            "This ensures every new joiner gets a seamless, personalized onboarding journey! 🚀"
+                ).send()
             else:
                 await cl.Message(content="❌ No templates were uploaded. Please check the repository structure.").send()
                 
@@ -262,10 +155,9 @@ async def main(message:str):
                 "team_type": team_type,
                 "buddy_name": existing_details.get("buddy_name"),
                 "buddy_email": existing_details.get("buddy_email"),
-                "manager_name": existing_details.get("manager_name"),
-                "manager_email": existing_details.get("manager_email", ""),
-                "team_lead_name": existing_details.get("team_lead_name"),
-                "team_lead_email": existing_details.get("team_lead_email", "")
+                "buddy_github": existing_details.get("buddy_github"),
+                "manager_github": existing_details.get("manager_github"),
+                "team_lead_github": existing_details.get("team_lead_github")
             }
             
             # Update the specific field
@@ -273,10 +165,12 @@ async def main(message:str):
                 update_data["buddy_name"] = new_value
             elif field == "buddy_email":
                 update_data["buddy_email"] = new_value
-            elif field == "manager_name":
-                update_data["manager_name"] = new_value
-            elif field == "team_lead_name":
-                update_data["team_lead_name"] = new_value
+            elif field == "buddy_github":
+                update_data["buddy_github"] = new_value
+            elif field == "manager_github":
+                update_data["manager_github"] = new_value
+            elif field == "team_lead_github":
+                update_data["team_lead_github"] = new_value
             
             # Save to MongoDB
             mongoclient.insert_team_details(
@@ -284,10 +178,9 @@ async def main(message:str):
                 update_data["team_type"],
                 update_data["buddy_name"],
                 update_data["buddy_email"],
-                update_data["manager_name"],
-                update_data["manager_email"],
-                update_data["team_lead_name"],
-                update_data["team_lead_email"]
+                update_data["buddy_github"],
+                update_data["manager_github"],
+                update_data["team_lead_github"]
             )
             
             field_display = field.replace("_", " ").title()
@@ -313,196 +206,109 @@ async def main(message:str):
             return
         cl.user_session.set("awaiting_team_detail_buddy_email", False)
         cl.user_session.set("team_detail_buddy_email", buddy_email)
-        await cl.Message(content="Please enter the manager's name:").send()
-        cl.user_session.set("awaiting_team_detail_manager_name", True)
+        await cl.Message(content="Please enter the buddy's GitHub username").send()
+        cl.user_session.set("awaiting_team_detail_buddy_github", True)
         return
     
-    if cl.user_session.get("awaiting_team_detail_manager_name"):
-        manager_name = message.content
-        cl.user_session.set("awaiting_team_detail_manager_name", False)
-        cl.user_session.set("team_detail_manager_name", manager_name)
-        await cl.Message(content="Please enter the team lead's name:").send()
-        cl.user_session.set("awaiting_team_detail_lead_name", True)
+    if cl.user_session.get("awaiting_team_detail_buddy_github"):
+        buddy_github = message.content.strip().lstrip('@')  # Remove @ if user includes it
+        cl.user_session.set("awaiting_team_detail_buddy_github", False)
+        cl.user_session.set("team_detail_buddy_github", buddy_github)
+        await cl.Message(content="Please enter the manager's GitHub username").send()
+        cl.user_session.set("awaiting_team_detail_manager_github", True)
         return
     
-    if cl.user_session.get("awaiting_team_detail_lead_name"):
-        lead_name = message.content
-        cl.user_session.set("awaiting_team_detail_lead_name", False)
-        cl.user_session.set("team_detail_lead_name", lead_name)
+    if cl.user_session.get("awaiting_team_detail_manager_github"):
+        manager_github = message.content.strip().lstrip('@')
+        cl.user_session.set("awaiting_team_detail_manager_github", False)
+        cl.user_session.set("team_detail_manager_github", manager_github)
+        await cl.Message(content="Please enter the team lead's GitHub username").send()
+        cl.user_session.set("awaiting_team_detail_lead_github", True)
+        return
+    
+    if cl.user_session.get("awaiting_team_detail_lead_github"):
+        lead_github = message.content.strip().lstrip('@')
+        cl.user_session.set("awaiting_team_detail_lead_github", False)
+        cl.user_session.set("team_detail_lead_github", lead_github)
         
         # Save all team details to MongoDB
         team_name = cl.user_session.get("selected_config_team")
         team_type = cl.user_session.get("selected_config_team_type")
         buddy_name = cl.user_session.get("team_detail_buddy_name")
         buddy_email = cl.user_session.get("team_detail_buddy_email")
-        manager_name = cl.user_session.get("team_detail_manager_name")
+        buddy_github = cl.user_session.get("team_detail_buddy_github")
+        manager_github = cl.user_session.get("team_detail_manager_github")
+        lead_github = cl.user_session.get("team_detail_lead_github")
         
         mongoclient.insert_team_details(
             team_name, team_type, buddy_name, buddy_email,
-            manager_name, "", lead_name, ""
+            buddy_github, manager_github, lead_github
         )
         
         await cl.Message(content=f"✅ Team details for '{team_name}' have been saved successfully!").send()
         return
     
-    # Handle joinee email input
-    if cl.user_session.get("awaiting_joinee_email"):
-        joinee_email = message.content
-        if not utils.is_valid_email(joinee_email):
-            await cl.Message(content="Please provide valid email address").send()
-            return
-            
-        cl.user_session.set("awaiting_joinee_email", False)
-        cl.user_session.set("joinee_email", joinee_email)
-        
-        # Get team and buddy information
-        selected_team = cl.user_session.get("selected_team")
-        buddy_name, buddy_email, buddy_github_username = mongoclient.get_buddy_information(selected_team)
-        
-        # Display welcome message to joinee FIRST
-        await cl.Message(
-            f"🎉 Welcome to the **{selected_team}** team!\n\n"
-            f"Your onboarding buddy is **{buddy_name}**, "
-            f"and their W3 ID is `{buddy_email}`.\n\n"
-            f"They'll help you get settled in — don't hesitate to reach out!"
-        ).send()
-        
-        # Create GitHub tasks (this will send messages for each issue)
-        tasks = await task_handler.create_github_onboarding_tasks(selected_team)
-        
-        # Send emails to buddy and joinee
-        buddy_email_result = email_integration.notify_buddy_about_new_joinee(
-            buddy_email=buddy_email,
-            joinee_email=joinee_email,
-            team_name=selected_team,
-            tasks=tasks
-        )
-        
-        joinee_email_result = email_integration.send_welcome_email_to_joinee(
-            joinee_email=joinee_email,
-            buddy_email=buddy_email,
-            buddy_name=buddy_name,
-            team_name=selected_team,
-            tasks=tasks
-        )
-        
-        # Notify about GitHub tasks
-        await cl.Message(content="✅ We've set up your onboarding tasks in GitHub! Check your assigned issues.").send()
-        
-        # Notify about emails
-        if buddy_email_result or joinee_email_result:
-            await cl.Message(content="📧 Welcome emails have been sent to you and your buddy with onboarding information.").send()
-        
-        return
-    
     # If not in any flow, treat the message as a general question
-    if not any([
-        cl.user_session.get("awaiting_buddy_name"),
-        cl.user_session.get("awaiting_buddy_email"),
-        cl.user_session.get("awaiting_github-username"),
-        cl.user_session.get("awaiting_team_name"),
-        cl.user_session.get("awaiting_team_template"),
-        cl.user_session.get("awaiting_existing_buddy_email"),
-        cl.user_session.get("awaiting_update_name"),
-        cl.user_session.get("awaiting_update_email"),
-        cl.user_session.get("awaiting_update_github"),
-        cl.user_session.get("awaiting_update_excel"),
-        cl.user_session.get("awaiting_joinee_email")
-    ]):
-        user_question = message.content.strip()
-        print('Calling AskQuestion.')
-        response = AskQuestion(user_question)
-        await cl.Message(content=response).send()
+    user_question = message.content.strip()
+    print('Admin asking question:', user_question)
+    response = AskQuestion(user_question)
+    await cl.Message(content=response).send()
 
-
-async def save_to_mongo_db(session):
-    buddy_name = session.get("buddy_name")
-    buddy_email = session.get("buddy_email")
-    team_name = session.get("team_name")
-    template_id = session.get("template_id")
-    buddy_github_username = session.get("buddy_github_username")
-    mongoclient.insert_team_data(team_name,buddy_name,buddy_email,template_id,buddy_github_username)
-    # Clear session data if you don't need it anymore
-    session.set("buddy_name", None)
-    session.set("buddy_email", None)
-    session.set("team_name", None)
-    session.set("template_id", None)
-    session.set("buddy_github_username",None)
 
 @cl.on_chat_start
 async def start():
+    """Start the admin application."""
     # Vector data is already loaded at application startup via startup_init module
-    # No need to call load_all_teams_data() here anymore - it's cached and ready to use
-    await cl.Message(content=f"Welcome to IBM!\nAre you a buddy or new joinee?").send()
+    await cl.Message(
+        content="🔧 **Welcome to IBM Onboarding Admin Portal**\n\n"
+                "👋 Hello, Administrator!\n\n"
+                "This is your central hub for managing the onboarding experience across all teams. "
+                "From here, you can upload onboarding templates and configure team structures to ensure "
+                "every new joiner gets the best possible start.\n\n"
+                "**Your Impact:**\n"
+                "• 📚 Maintain up-to-date onboarding resources\n"
+                "• 👥 Assign buddies to support new team members\n"
+                "• 🎯 Ensure smooth onboarding workflows\n"
+                "• 💬 Answer questions about onboarding templates\n\n"
+                "**Let's get started!** Choose an action below, or ask me any questions about the templates:"
+    ).send()
+    
     # Send buttons
     await cl.Message(
-        content="Please choose:",
+        content="**Available Options:**",
         actions=[
             cl.Action(
                 name="role_selected",
-                value="Buddy",
-                label="👥 I'm a Buddy",
-                payload={"role": "Buddy"}
-            ),
-            cl.Action(
-                name="role_selected",
-                value="ExistingBuddy",
-                label="👤 I'm an Existing Buddy",
-                payload={"role": "ExistingBuddy"}
-            ),
-            cl.Action(
-                name="role_selected",
-                value="Joinee",
-                label="🧑‍💼 I'm a New Joinee",
-                payload={"role": "Joinee"}
-            ),
-            cl.Action(
-                name="role_selected",
-                value="TeamsAdmin",
                 label="🔧 Teams Administrator",
                 payload={"role": "TeamsAdmin"}
             ),
             cl.Action(
                 name="role_selected",
-                value="ConfigureTeam",
                 label="⚙️ Configure Team Details",
                 payload={"role": "ConfigureTeam"}
             ),
         ]
     ).send()
 
-@cl.action_callback("update_option")
-async def handle_update_option(action: cl.Action):
-    update_type = action.payload.get("update")
-    
-    if update_type == "name":
-        await cl.Message(content="Please enter your new name:").send()
-        cl.user_session.set("awaiting_update_name", True)
-    
-    elif update_type == "email":
-        await cl.Message(content="Please enter your new email address:").send()
-        cl.user_session.set("awaiting_update_email", True)
-    
-    elif update_type == "github":
-        await cl.Message(content="Please enter your new GitHub username:").send()
-        cl.user_session.set("awaiting_update_github", True)
-    
-    elif update_type == "excel":
-        await cl.Message(content="Please upload your new Excel file:").send()
-        cl.user_session.set("awaiting_update_excel", True)
 
 @cl.action_callback("role_selected")
 async def handle_action(action: cl.Action):
+    """Handle role selection."""
     role = action.payload.get("role")
-    if role == "Buddy":
-        await cl.Message(content="Awesome! What's your name, Buddy?").send()
-        cl.user_session.set("awaiting_buddy_name", True)
-    elif role == "ExistingBuddy":
-        await cl.Message(content="Welcome back! Please enter your email to identify yourself:").send()
-        cl.user_session.set("awaiting_existing_buddy_email", True)
-    elif role == "TeamsAdmin":
-        await cl.Message(content="🔧 Welcome, Teams Administrator!\n\nPlease provide the GitHub repository link containing your onboarding templates.\n\nThe repository should have an 'onboarding' folder with the following structure:\n- child/\n- product/\n- teams/\n- epic.md").send()
+    
+    if role == "TeamsAdmin":
+        await cl.Message(
+            content="🔧 **Welcome, Teams Administrator!**\n\n"
+                    "📚 **Upload Onboarding Templates**\n\n"
+                    "Let's make onboarding resources available to all teams! Simply provide your GitHub repository link, "
+                    "and we'll take care of organizing everything.\n\n"
+                    "**What you need:**\n"
+                    "• A GitHub repository link with your onboarding templates\n"
+                    "• Templates organized in folders: common, product-specific, and team-specific\n\n"
+                    "**Ready?** Paste your GitHub repository link below:"
+        ).send()
         cl.user_session.set("awaiting_github_repo_link", True)
+    
     elif role == "ConfigureTeam":
         # Get all team names from templates
         team_names_dict = mongoclient.get_all_team_names_from_templates()
@@ -515,14 +321,17 @@ async def handle_action(action: cl.Action):
             all_teams.append({"name": team, "type": "teams"})
         
         if not all_teams:
-            await cl.Message(content="❌ No teams found. Please upload templates first using Teams Administrator option.").send()
+            await cl.Message(
+                content="❌ **No Teams Found**\n\n"
+                        "It looks like you haven't uploaded any templates yet. "
+                        "Please use the **Teams Administrator** option first to upload your onboarding templates."
+            ).send()
             return
         
         # Create action buttons for all teams
         team_actions = [
             cl.Action(
                 name="config_team_select",
-                value=f"{team['name']}|{team['type']}",
                 label=team['name'],
                 payload={"team_name": team['name'], "team_type": team['type']}
             )
@@ -530,17 +339,21 @@ async def handle_action(action: cl.Action):
         ]
         
         await cl.Message(
-            content="⚙️ Configure Team Details\n\nSelect a team to configure:",
+            content="⚙️ **Configure Team Details**\n\n"
+                    "👥 **Set Up Your Team Structure**\n\n"
+                    "For each team, you'll assign:\n"
+                    "• A **Buddy** to guide new joiners\n"
+                    "• A **Manager** for oversight\n"
+                    "• A **Team Lead** for technical guidance\n\n"
+                    "This ensures every new team member knows exactly who to reach out to! 🤝\n\n"
+                    "**Select a team to configure:**",
             actions=team_actions
         ).send()
-    elif role == "Joinee":
-        team_names = mongoclient.get_all_teams()
-        print(team_names)
-        options = [cl.Action(name="team_select",label=str(name), value=str(name),payload={}) for name in team_names if name]
-        await cl.Message(content="Welcome aboard! Let's get you started. 🚀 \nSelect your team:",actions=options).send()
+
 
 @cl.action_callback("config_team_select")
 async def handle_config_team_select(action: cl.Action):
+    """Handle team selection for configuration."""
     team_name = action.payload.get("team_name")
     team_type = action.payload.get("team_type")
     
@@ -554,21 +367,19 @@ async def handle_config_team_select(action: cl.Action):
     if existing_details:
         # Show existing details and ask if user wants to edit
         await cl.Message(
-            content=f"📋 Current details for **{team_name}**:\n\n"
-                    f"**Buddy:** {existing_details.get('buddy_name')} ({existing_details.get('buddy_email')})\n"
-                    f"**Manager:** {existing_details.get('manager_name')}\n"
-                    f"**Team Lead:** {existing_details.get('team_lead_name')}\n\n"
+            content=f"📋 **Current details for {team_name}:**\n\n"
+                    f"**Buddy:** {existing_details.get('buddy_name')} ({existing_details.get('buddy_email')}) - @{existing_details.get('buddy_github')}\n"
+                    f"**Manager:** @{existing_details.get('manager_github')}\n"
+                    f"**Team Lead:** @{existing_details.get('team_lead_github')}\n\n"
                     f"Would you like to update these details?",
             actions=[
                 cl.Action(
                     name="edit_team_details",
-                    value="yes",
                     label="✏️ Edit Details",
                     payload={"edit": True}
                 ),
                 cl.Action(
                     name="edit_team_details",
-                    value="no",
                     label="❌ Cancel",
                     payload={"edit": False}
                 )
@@ -576,50 +387,55 @@ async def handle_config_team_select(action: cl.Action):
         ).send()
     else:
         # No existing details, start collecting
-        await cl.Message(content=f"⚙️ Configuring details for **{team_name}**\n\nPlease enter the buddy's name:").send()
+        await cl.Message(content=f"⚙️ **Configuring details for {team_name}**\n\nPlease enter the buddy's name:").send()
         cl.user_session.set("awaiting_team_detail_buddy_name", True)
+
 
 @cl.action_callback("edit_team_details")
 async def handle_edit_team_details(action: cl.Action):
+    """Handle editing team details."""
     should_edit = action.payload.get("edit")
     
     if should_edit:
         team_name = cl.user_session.get("selected_config_team")
         # Show field selection options
         await cl.Message(
-            content=f"✏️ Which field would you like to update for **{team_name}**?",
+            content=f"✏️ **Which field would you like to update for {team_name}?**",
             actions=[
                 cl.Action(
                     name="field_to_update",
-                    value="buddy_name",
                     label="Buddy Name",
                     payload={"field": "buddy_name"}
                 ),
                 cl.Action(
                     name="field_to_update",
-                    value="buddy_email",
                     label="Buddy Email",
                     payload={"field": "buddy_email"}
                 ),
                 cl.Action(
                     name="field_to_update",
-                    value="manager_name",
-                    label="Manager Name",
-                    payload={"field": "manager_name"}
+                    label="Buddy GitHub",
+                    payload={"field": "buddy_github"}
                 ),
                 cl.Action(
                     name="field_to_update",
-                    value="team_lead_name",
-                    label="Team Lead Name",
-                    payload={"field": "team_lead_name"}
+                    label="Manager GitHub",
+                    payload={"field": "manager_github"}
+                ),
+                cl.Action(
+                    name="field_to_update",
+                    label="Team Lead GitHub",
+                    payload={"field": "team_lead_github"}
                 )
             ]
         ).send()
     else:
         await cl.Message(content="Operation cancelled.").send()
 
+
 @cl.action_callback("field_to_update")
 async def handle_field_to_update(action: cl.Action):
+    """Handle field selection for update."""
     field = action.payload.get("field")
     team_name = cl.user_session.get("selected_config_team")
     
@@ -627,73 +443,9 @@ async def handle_field_to_update(action: cl.Action):
     cl.user_session.set("updating_field", field)
     
     # Ask for the new value based on field
-    if field == "buddy_name":
-        await cl.Message(content=f"Please enter the new buddy name for **{team_name}**:").send()
-        cl.user_session.set("awaiting_field_update", True)
-    elif field == "buddy_email":
-        await cl.Message(content=f"Please enter the new buddy email for **{team_name}**:").send()
-        cl.user_session.set("awaiting_field_update", True)
-    elif field == "manager_name":
-        await cl.Message(content=f"Please enter the new manager name for **{team_name}**:").send()
-        cl.user_session.set("awaiting_field_update", True)
-    elif field == "team_lead_name":
-        await cl.Message(content=f"Please enter the new team lead name for **{team_name}**:").send()
-        cl.user_session.set("awaiting_field_update", True)
-
-@cl.action_callback("team_select")
-async def on_action(action: cl.Action):
-    if action.name == "team_select":
-        selected_team = action.label
-        load_vector_db_for_selected_team(selected_team)
-        
-        # Store selected team in session
-        cl.user_session.set("selected_team", selected_team)
-        
-        # Ask for joinee's email
-        await cl.Message(content="Please enter your email address:").send()
-        cl.user_session.set("awaiting_joinee_email", True)
-        
+    field_display = field.replace("_", " ").title()
+    await cl.Message(content=f"Please enter the new **{field_display}** for **{team_name}**:").send()
+    cl.user_session.set("awaiting_field_update", True)
 
 
 
-
-async def handle_file_upload(message: cl.Message,session):
-    if message.elements:
-        for file in message.elements:
-            # ✅ file.path gives you the local path to the uploaded file
-            await cl.Message(content=f"Thanks for uploading we will review it").send()
-            # You can now open/read/process it like any local file
-            with open(file.path, "rb") as f:
-              fileContent = f.read()
-            #   doc = Document(io.BytesIO(fileContent))
-            #   file_validated = await file_validator(file,doc)
-              file_validated = True
-              if file_validated:
-                team_name = session.get("team_name")
-                if team_name:
-                    template_id = ibm_cloud.upload_to_ibm_cos(team_name,fileContent)
-                    return template_id
-                  
-    else:
-        await cl.Message(
-            content="Please upload your filled Word template here."
-        ).send()
-
-
-async def file_validator(file,doc):
-    try:
-        # Example: Check for a required heading or placeholder text
-        required_texts = ["Buddy"]
-        found_all = all(
-            any(req in para.text for para in doc.paragraphs)
-            for req in required_texts
-        )
-        if found_all:
-            cl.user_session.set("awaiting_team_template",False)
-            await cl.Message(content=f"Your template is validated successfully").send()
-            return True
-        if not found_all:
-            await cl.Message(content="⚠️ The uploaded document is missing required fields. Please use the provided template.").send()
-        return False
-    except Exception as e:
-        await cl.Message(content=f"❌ Failed to read the document. Error: {e}").send()

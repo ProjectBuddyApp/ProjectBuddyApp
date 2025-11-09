@@ -3,6 +3,10 @@ import re
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from ibm_watsonx_ai import Credentials
+from ibm_watsonx_ai.foundation_models import Embeddings
+from ibm_watsonx_ai.metanames import EmbedTextParamsMetaNames as EmbedParams
+from ibm_watsonx_ai.foundation_models.utils.enums import EmbeddingTypes
 from langchain_groq import ChatGroq
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -10,7 +14,6 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains import create_retrieval_chain
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFDirectoryLoader
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 import pandas as pd
 import logging
@@ -37,7 +40,7 @@ You are an onboarding assistant helping new employees onboard.
 Answer the user's question in a clear, direct, and professional manner using only the information provided in the following context.
 If the context does not contain the exact answer, use your best judgment from your knowledge to provide a helpful and relevant response.
 
-Always be confident and supportive. Do not mention that the information came from the context.
+Always be confident and supportive. Do not mention that the information came from the context. 
 Do not say "based on the context" or "the document says".
 
 <context>
@@ -45,17 +48,65 @@ Do not say "based on the context" or "the document says".
 <context>
 Question:{input}
 """
+# IBM watsonx.ai credentials for embeddings
+watsonx_api_key = os.getenv("WATSONX_API_KEY")
+watsonx_project_id = os.getenv("WATSONX_PROJECT_ID")
+watsonx_url = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
 
-# Initialize HuggingFace Embeddings (free, no quota limits)
-logger.info("Initializing HuggingFace Embeddings...")
-embedding_model = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2",
-    model_kwargs={'device': 'cpu'},
-    encode_kwargs={'normalize_embeddings': True}
+# Check if we have Watson credentials
+if not watsonx_project_id:
+    raise ValueError("WATSONX_PROJECT_ID must be set in environment variables")
+
+if not watsonx_api_key:
+    raise ValueError("WATSONX_API_KEY must be set in environment variables")
+
+# Configure Watson embedding parameters
+embed_params = {
+    EmbedParams.TRUNCATE_INPUT_TOKENS: 512,
+    EmbedParams.RETURN_OPTIONS: {
+        'input_text': False
+    }
+}
+
+# Initialize Watson Embeddings
+logger.info("Initializing IBM Watson AI Embeddings...")
+_watson_embeddings = Embeddings(
+    model_id=EmbeddingTypes.IBM_SLATE_125M_ENG,
+    params=embed_params,
+    credentials=Credentials(
+        api_key=watsonx_api_key,
+        url=watsonx_url
+    ),
+    project_id=watsonx_project_id,
+    batch_size=1000,
+    concurrency_limit=5,
+    persistent_connection=True
 )
-logger.info("HuggingFace Embeddings initialized successfully")
+logger.info("Watson Embeddings initialized successfully")
 
-# Initialize Groq LLM (still using llama-3.1-8b-instant for Q&A)
+# Create a wrapper class to make Watson Embeddings compatible with LangChain FAISS
+class WatsonEmbeddingsWrapper:
+    """Wrapper to make Watson Embeddings compatible with LangChain's FAISS"""
+    
+    def __init__(self, watson_embeddings):
+        self.watson_embeddings = watson_embeddings
+    
+    def embed_documents(self, texts):
+        """Embed a list of documents"""
+        return self.watson_embeddings.embed_documents(texts)
+    
+    def embed_query(self, text):
+        """Embed a single query"""
+        return self.watson_embeddings.embed_query(text)
+    
+    def __call__(self, text):
+        """Make the object callable for FAISS compatibility"""
+        return self.embed_query(text)
+
+# Create the wrapper instance
+embedding_model = WatsonEmbeddingsWrapper(_watson_embeddings)
+
+# Initialize Groq LLM
 groq_api_key = os.getenv("GROQ_API_KEY")
 llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.1-8b-instant")
 prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
@@ -86,26 +137,13 @@ class MyBuddy:
     def extract_links_from_text(self, text: str) -> List[str]:
         """
         Extract URLs from text using regex pattern.
-        Filters out Slack and YourLearning URLs.
         
         :param text: Text to extract URLs from
-        :return: List of extracted URLs (excluding Slack and YourLearning)
+        :return: List of extracted URLs
         """
         # URL regex pattern
         url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+'
-        all_urls = re.findall(url_pattern, str(text))
-        
-        # Filter out Slack and YourLearning URLs
-        filtered_urls = []
-        for url in all_urls:
-            url_lower = url.lower()
-            # Skip if URL contains slack or yourlearning domains
-            if 'slack.com' in url_lower or 'yourlearning' in url_lower:
-                logger.info(f"Skipping Slack/YourLearning URL: {url}")
-                continue
-            filtered_urls.append(url)
-        
-        return filtered_urls
+        return re.findall(url_pattern, str(text))
     
     def fetch_content_from_url(self, url: str) -> str:
         """
@@ -206,12 +244,24 @@ def _get_teams_hash():
 
 def load_all_teams_data(force_reload=False):
     """
-    Load vector data for all teams from MongoDB with smart caching.
-    Only loads new teams that haven't been loaded before.
+    Load vector data for all teams from MongoDB with caching.
+    This creates a combined retrieval chain with data from all teams.
+    Only reloads if teams have changed or force_reload is True.
     
-    :param force_reload: Force reload all teams (ignores cache)
+    :param force_reload: Force reload even if cache exists
     """
     global retrieval_chain, _cache_initialized, _vector_cache
+    
+    # Check if already initialized and teams haven't changed
+    if _cache_initialized and not force_reload:
+        current_hash = _get_teams_hash()
+        cached_hash = _vector_cache.get('teams_hash')
+        
+        if current_hash == cached_hash:
+            logger.info("Using cached vector data - no changes detected")
+            return
+    
+    logger.info("Loading data for all teams...")
     
     # Get all team names from MongoDB
     team_names = mongoclient.get_all_teams()
@@ -220,29 +270,11 @@ def load_all_teams_data(force_reload=False):
         logger.warning("No teams found in the database")
         return
     
-    # Get currently loaded teams from cache
-    loaded_teams = _vector_cache.get('loaded_team_names', set())
+    # Create a list to store all vector stores
+    all_vectors = []
     
-    # Find new teams that need to be loaded
-    new_teams = set(team_names) - loaded_teams if not force_reload else set(team_names)
-    
-    if not new_teams and _cache_initialized:
-        logger.info(f"✅ All {len(loaded_teams)} teams already loaded in cache")
-        return
-    
-    if new_teams:
-        logger.info(f"📥 Loading {len(new_teams)} new teams: {', '.join(new_teams)}")
-    else:
-        logger.info(f"🔄 Force reload: Loading all {len(team_names)} teams...")
-    
-    # Get existing vector store from cache (if any)
-    existing_vectors = _vector_cache.get('combined_vectors')
-    new_vectors = []
-    
-    # Load only new teams
-    teams_to_load = new_teams if not force_reload else set(team_names)
-    
-    for team_name in teams_to_load:
+    # Load data for each team
+    for team_name in team_names:
         try:
             logger.info(f"Loading data for team: {team_name}")
             
@@ -271,41 +303,23 @@ def load_all_teams_data(force_reload=False):
             
             # Load the vector store
             vectors = FAISS.load_local(local_folder, embedding_model, allow_dangerous_deserialization=True)
-            new_vectors.append(vectors)
-            
-            # Add to loaded teams set
-            loaded_teams.add(team_name)
+            all_vectors.append(vectors)
             
         except Exception as e:
             logger.error(f"Error loading data for team {team_name}: {e}")
     
-    # Combine vectors
-    if force_reload:
-        # Full reload - use only new vectors
-        if not new_vectors:
-            logger.error("No vector stores were loaded successfully")
-            return
-        combined_vectors = new_vectors[0]
-        for vs in new_vectors[1:]:
-            combined_vectors.merge_from(vs)
+    if not all_vectors:
+        logger.error("No vector stores were loaded successfully")
+        return
+    
+    # Combine all vector stores
+    if len(all_vectors) == 1:
+        combined_vectors = all_vectors[0]
     else:
-        # Incremental load - merge with existing
-        if existing_vectors and new_vectors:
-            logger.info(f"🔗 Merging {len(new_vectors)} new team vectors with existing cache")
-            combined_vectors = existing_vectors
-            for vs in new_vectors:
-                combined_vectors.merge_from(vs)
-        elif new_vectors:
-            logger.info(f"📦 Creating initial vector store with {len(new_vectors)} teams")
-            combined_vectors = new_vectors[0]
-            for vs in new_vectors[1:]:
-                combined_vectors.merge_from(vs)
-        elif existing_vectors:
-            logger.info("✅ Using existing cached vectors")
-            combined_vectors = existing_vectors
-        else:
-            logger.error("No vector stores available")
-            return
+        # Merge all vector stores
+        combined_vectors = all_vectors[0]
+        for vs in all_vectors[1:]:
+            combined_vectors.merge_from(vs)
     
     # Create the retrieval chain
     document_chain = create_stuff_documents_chain(llm, prompt)
@@ -313,42 +327,23 @@ def load_all_teams_data(force_reload=False):
     retrieval_chain = create_retrieval_chain(retriever, document_chain)
     
     # Update cache
-    _vector_cache['combined_vectors'] = combined_vectors
-    _vector_cache['loaded_team_names'] = loaded_teams
     _vector_cache['teams_hash'] = _get_teams_hash()
     _cache_initialized = True
     
-    logger.info(f"✅ Successfully loaded {len(loaded_teams)} teams total ({len(new_teams)} new)")
+    logger.info("Successfully loaded data for all teams and cached")
 
 def AskQuestion(question: str) -> str:
     """
     Answers a user question using the document-based retrieval chain.
-    Falls back to direct LLM if no vector database is available.
 
     :param question: The user's question as a string.
     :return: Answer string generated by the language model.
     """
     global retrieval_chain
     
-    try:
-        # Try to use the retrieval chain if available
-        if retrieval_chain is not None:
-            response = retrieval_chain.invoke({'input': question})
-            return response['answer']
-        else:
-            # Fallback to direct LLM without RAG
-            logger.warning("No retrieval chain available, using direct LLM")
-            response = llm.invoke(question)
-            return response.content
-    except Exception as e:
-        # If RAG fails, fallback to direct LLM
-        logger.error(f"Error in RAG, falling back to direct LLM: {e}")
-        try:
-            response = llm.invoke(question)
-            return response.content
-        except Exception as llm_error:
-            logger.error(f"LLM also failed: {llm_error}")
-            return "I apologize, but I'm having trouble answering your question right now. Please try again or contact your buddy for assistance."
+    # Use the retrieval chain to answer the question
+    response = retrieval_chain.invoke({'input': question})
+    return response['answer']
 
 
 def load_vector_db_for_selected_team(team_name):

@@ -1,12 +1,16 @@
 import requests
 from io import BytesIO
 import os
+from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
 
-API_KEY="C3ePfiQHqD_PbHuo6rHivG1fDa_AgOcqMdmzHOawUyi1"
-BUCKET_NAME="hacker-01"
-VECTOR_BUCKET_NAME="vector-db-bucket"
-TEMPLATES_BUCKET_NAME="onboarding-teams-templates-bucket"
+# Get credentials from environment variables
+API_KEY = os.getenv("IBM_CLOUD_API_KEY")
+BUCKET_NAME = os.getenv("IBM_CLOUD_BUCKET_NAME")
+VECTOR_BUCKET_NAME = os.getenv("IBM_CLOUD_VECTOR_BUCKET_NAME")
+TEMPLATES_BUCKET_NAME = os.getenv("IBM_CLOUD_TEMPLATES_BUCKET_NAME")
 
 def get_ibm_iam_access_token() -> str:
     url = "https://iam.test.cloud.ibm.com/oidc/token"
